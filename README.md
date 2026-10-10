@@ -1,3 +1,6 @@
+<img width="1603" height="917" alt="Screenshot 2026-10-10 084855" src="https://github.com/user-attachments/assets/fdd78c54-87de-4742-9b79-f59b69ff2dff" />
+
+
 # RE-Formatter
 
 A USB drive wiper and formatter with a Windows 98 look, written in Rust with no
