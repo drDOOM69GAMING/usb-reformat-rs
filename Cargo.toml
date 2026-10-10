@@ -1,0 +1,21 @@
+[package]
+name = "usb-reformat"
+version = "1.0.0"
+edition = "2021"
+description = "Wipe, repartition and format USB drives (exFAT/FAT32) on Windows"
+
+[[bin]]
+name = "usb-reformat"
+path = "src/main.rs"
+
+[dependencies]
+# Chiptune playback (embedded RCDATA -> memory -> audio device).
+# These were verified to build on x86_64-pc-windows-gnu (cargo check passed).
+rodio = "0.17"
+xmrs = { version = "0.15", features = ["import"] }
+xmrsplayer = "0.15"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

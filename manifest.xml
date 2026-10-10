@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity
+      type="win32"
+      name="RE-Formatter"
+      version="1.0.0.0"
+      processorArchitecture="*"/>
+
+  <!-- Always launch elevated: wiping a raw \\.\PhysicalDrive needs admin. -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <!--
+    Deliberately NOT depending on comctl32 v6. The app forces un-themed
+    classic controls (SetThemeAppProperties(0)) for the Win98 look, so v6
+    buys nothing visually - but v6 draws button faces itself and ignores the
+    WM_CTLCOLOR* handlers, which would leave the dark theme with light
+    buttons. The v5 (classic) control set honours them, so dark mode works.
+  -->
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+</assembly>
