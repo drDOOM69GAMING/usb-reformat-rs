@@ -4,7 +4,11 @@ A USB drive wiper and formatter with a Windows 98 look, written in Rust with no
 GUI toolkit. The window is drawn by hand against raw Win32 calls, so it looks
 and behaves like a 1998 dialog instead of a modern app in a costume.
 
-![Build](https://github.com/drDOOM69GAMING/usb-reformat-rs/actions/workflows/build.yml/badge.svg)
+[![Build](https://github.com/drDOOM69GAMING/usb-reformat-rs/actions/workflows/build.yml/badge.svg)](https://github.com/drDOOM69GAMING/usb-reformat-rs/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/drDOOM69GAMING/usb-reformat-rs?label=Release&color=28A745)](https://github.com/drDOOM69GAMING/usb-reformat-rs/releases/latest)
+[![Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)](https://learn.microsoft.com/en-us/windows/)
+[![Rust](https://img.shields.io/badge/rust-2021-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Downloads](https://img.shields.io/github/downloads/drDOOM69GAMING/usb-reformat-rs/total?label=Downloads&color=0078D4)](https://github.com/drDOOM69GAMING/usb-reformat-rs/releases)
 
 ## What it does
 
@@ -49,15 +53,16 @@ patch the resources in.
 
 ## Music
 
-The chiptunes are not in this repo. Drop your own `.xm`, `.it` or `.mod` files
-into `music\` and `build.ps1` embeds them into the exe as RCDATA resources. At
-runtime they are played straight out of the executable's own resources, so
-nothing is ever unpacked to `%TEMP%`.
+The 100 chiptunes live in [`music/`](music/) in this repo, and `build.ps1`
+embeds them into the exe as RCDATA resources. At runtime they are played
+straight out of the executable's own resources, so nothing is ever unpacked to
+`%TEMP%`. Drop any extra `.xm`, `.it` or `.mod` files in there and they get
+embedded too.
 
 Playback picks a random track at startup and moves on when one finishes. The
 end of a track is detected by the player reporting the module as finished, not
-by a timer, so long songs play all the way through. About one track in the
-reference collection has a pattern jump that never resolves and never goes
+by a timer, so long songs play all the way through. One track in the collection
+(`4mat - blank page.xm`) has a pattern jump that never resolves and never goes
 quiet, and a 15 minute guard exists purely to skip that one.
 
 ## How it works
