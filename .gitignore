@@ -2,11 +2,5 @@
 # so never commit anything from here. Use build.ps1 instead.
 /target/
 
-# Chiptunes are not redistributed with the source. Drop your own .xm / .it /
-# .mod files in here and build.ps1 will embed them as RCDATA resources.
-# See the "Music" section of README.md.
-/music/*
-!/music/.gitkeep
-
 # Worker logs
 *.log
