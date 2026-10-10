@@ -927,11 +927,14 @@ fn run_diskpart_timeout(script: &str, timeout: Duration) -> bool {
 
     // Emit whatever diskpart wrote. Console programs buffer their output when
     // not attached to a console, so this often only arrives once it has exited.
+    let mut combined = String::new();
     for p in [&out_path, &err_path] {
         if let Ok(text) = fs::read_to_string(p) {
             for line in text.lines() {
                 if !line.trim().is_empty() {
                     log("DATA", line.trim_end());
+                    combined.push_str(line.trim_end());
+                    combined.push('\n');
                 }
             }
         }
@@ -946,7 +949,10 @@ fn run_diskpart_timeout(script: &str, timeout: Duration) -> bool {
         }
     }
 
-    match status {
+    // diskpart exits 0 even when a command inside the script fails, so the
+    // exit code on its own is not a reliable answer. Judge it by what diskpart
+    // actually printed.
+    let mut ok = match status {
         Some(s) if s.success() => true,
         Some(s) => {
             log("ERROR", &format!("diskpart exited with {:?}", s.code()));
@@ -958,7 +964,30 @@ fn run_diskpart_timeout(script: &str, timeout: Duration) -> bool {
             }
             false
         }
+    };
+
+    if ok {
+        for line in combined.lines() {
+            let low = line.to_ascii_lowercase();
+            if low.contains("virtual disk service error")
+                || low.contains("diskpart has encountered an error")
+                || low.contains("the requested operation failed")
+                || low.contains("access is denied")
+                || low.contains("cannot find the file")
+            {
+                log("ERROR", &format!("diskpart reported: {}", line.trim()));
+                if low.contains("access is denied") {
+                    log(
+                        "ERROR",
+                        "Windows refused access to the drive. Something still had it open, such as \
+                         an Explorer window on that drive.",
+                    );
+                }
+                ok = false;
+            }
+        }
     }
+    ok
 }
 
 /// Quick rebuild: clean -> create -> format -> assign. Old data is simply
@@ -1720,7 +1749,17 @@ pub fn process_target(letter: char, fs_kind: &str, interactive: bool, passes: u3
         ));
         say("\r\n");
         spinner_start("working");
+        // Dismount before rebuilding. Without this the volume is still mounted
+        // and Windows refuses the clean with "Access is denied", which is what
+        // made quick wipes fail whenever the drive was still open.
+        let quick_locked = lock_volumes_on_disk(disk);
+        std::thread::sleep(Duration::from_secs(2));
         let rebuilt = diskpart_rebuild(disk, letter, fs_kind);
+        for h in &quick_locked {
+            unsafe {
+                CloseHandle(*h);
+            }
+        }
         spinner_stop();
         if !rebuilt {
             log(
