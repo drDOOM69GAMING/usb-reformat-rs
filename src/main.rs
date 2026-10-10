@@ -78,6 +78,7 @@ fn main() {
 
     // Headless elevated worker launched by the GUI. No console, no window.
     if has_flag(&args, "--run") {
+        core::init_trace();
         let code = match parse_worker_args(&args) {
             Some((drives, fs_kind, passes, log)) if !drives.is_empty() => {
                 core::run_worker(&drives, &fs_kind, passes, &log)
@@ -89,6 +90,7 @@ fn main() {
 
     if has_flag(&args, "--work") {
         core::init_io();
+        core::init_trace();
         core::run_workflow();
         core::refresh_explorer();
         core::pause_console();
@@ -100,6 +102,14 @@ fn main() {
         core::refresh_explorer();
         core::sayln("Explorer refreshed.");
         core::pause_console();
+        return;
+    }
+
+    if has_flag(&args, "--events") {
+        // Diagnostic: run the native System event log scan on its own and write
+        // it to the trace log, so the reader can be checked without a failure.
+        core::init_trace();
+        core::trace_event_log("manual --events scan", 1440);
         return;
     }
 

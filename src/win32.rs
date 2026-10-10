@@ -291,6 +291,11 @@ extern "system" {
     pub fn GetCurrentProcess() -> HANDLE;
     pub fn GetExitCodeProcess(h_process: HANDLE, lp_exit_code: *mut u32) -> BOOL;
     pub fn GetLocalTime(lp_system_time: *mut crate::core::WinSystemTime);
+    pub fn SystemTimeToTzSpecificLocalTime(
+        lp_time_zone_information: *const c_void,
+        lp_universal_time: *const crate::core::WinSystemTime,
+        lp_local_time: *mut crate::core::WinSystemTime,
+    ) -> BOOL;
     pub fn GetLogicalDrives() -> DWORD;
     pub fn GetDriveTypeW(lp_root_path_name: *const u16) -> u32;
     pub fn GetVolumeInformationW(
@@ -337,6 +342,12 @@ extern "system" {
         lp_overlapped: *mut c_void,
     ) -> BOOL;
     pub fn FlushFileBuffers(h_file: HANDLE) -> BOOL;
+    pub fn SetFilePointerEx(
+        h_file: HANDLE,
+        li_distance_to_move: i64,
+        lp_new_file_pointer: *mut i64,
+        dw_move_method: DWORD,
+    ) -> BOOL;
     pub fn FindFirstVolumeW(lpsz_volume_name: *mut u16, cch_buffer_length: DWORD) -> HANDLE;
     pub fn FindNextVolumeW(
         h_find_volume: HANDLE,

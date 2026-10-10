@@ -265,6 +265,405 @@ pub fn log(level: &str, msg: &str) {
             }
         }
     }
+    trace(&line);
+}
+
+// ---------------- verbose trace ----------------
+//
+// A second, much more detailed log written next to the main one as
+// `usb-reformat_trace_<timestamp>.log`. It records every step, every Win32
+// call the wipe makes, and - the part that matters - what Windows itself said
+// in the System event log at the moment something failed.
+//
+// The normal log prints what the app decided. This one prints what actually
+// happened underneath, so a failure can be diagnosed from the log alone instead
+// of guessing.
+
+static TRACE: OnceLock<Mutex<Option<std::fs::File>>> = OnceLock::new();
+
+fn trace_path() -> std::path::PathBuf {
+    let stamp = now_string().replace([':', ' '], "-").replace('/', "-");
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("usb-reformat-trace-{}.log", stamp))
+}
+
+/// Write one line to the verbose trace file. Never panics, never blocks long.
+pub fn trace(msg: &str) {
+    if let Some(m) = TRACE.get() {
+        if let Ok(mut guard) = m.lock() {
+            if let Some(f) = guard.as_mut() {
+                let _ = writeln!(f, "[{}] {}", now_string(), msg);
+                let _ = f.flush();
+            }
+        }
+    }
+}
+
+/// Open the trace file. Safe to call more than once.
+pub fn init_trace() {
+    let _ = TRACE.get_or_init(|| {
+        Mutex::new(match std::fs::File::create(trace_path()) {
+            Ok(f) => {
+                trace(&format!("=== TRACE STARTED {} ===", now_string()));
+                Some(f)
+            }
+            Err(e) => {
+                eprintln!("could not open trace log: {}", e);
+                None
+            }
+        })
+    });
+}
+
+/// Record a Win32 call and its result, including the decoded error.
+pub fn trace_io(op: &str, detail: &str, ok: bool, err: u32) {
+    let verdict = if ok {
+        "ok".to_string()
+    } else {
+        format!(
+            "FAILED Win32 {} (0x{:08X}) = {}",
+            err,
+            err,
+            describe_error(err)
+        )
+    };
+    trace(&format!("{:<28} {:<52} {}", op, detail, verdict));
+}
+
+/// Plain-English meaning of a Win32 error code.
+pub fn describe_error(err: u32) -> &'static str {
+    match err {
+        5 => "ACCESS_DENIED - Windows refused the operation",
+        6 => "INVALID_HANDLE",
+        19 => "WRITE_PROTECT - media is write protected",
+        21 => "NOT_READY - device not accepting media access",
+        24 => "BAD_COMMAND",
+        50 => "NOT_SUPPORTED",
+        55 => "SECTOR_NOT_FOUND - bad sector",
+        87 => "INVALID_PARAMETER",
+        1117 => "IO_DEVICE - drive reported an I/O error under load",
+        112 => "DISK_FULL",
+        1217 => "REQUEST_ABORTED",
+        122 => "INSUFFICIENT_BUFFER",
+        123 => "INVALID_NAME",
+        _ => "see System event log",
+    }
+}
+
+// ---------------- native Windows event log reader ----------------
+//
+// Reads the System event log through wevtapi.dll. No PowerShell, no child
+// processes: this is the same API Event Viewer itself uses. Anything Windows
+// says about a disk around a failure is the authoritative reason, so it is
+// pulled out automatically instead of being hunted for by hand.
+// `wevtapi.dll` has no import library in this MinGW toolchain, so the four
+// functions we need are resolved at runtime (same approach as dwmapi above).
+type FnEvtQuery = unsafe extern "system" fn(HANDLE, *const u16, *const u16, u32) -> HANDLE;
+type FnEvtNext = unsafe extern "system" fn(HANDLE, u32, *mut HANDLE, u32, u32, *mut u32) -> BOOL;
+type FnEvtRender =
+    unsafe extern "system" fn(HANDLE, HANDLE, u32, u32, *mut c_void, *mut u32, *mut u32) -> BOOL;
+type FnEvtClose = unsafe extern "system" fn(HANDLE) -> BOOL;
+
+struct EvtApi {
+    query: FnEvtQuery,
+    next: FnEvtNext,
+    render: FnEvtRender,
+    close: FnEvtClose,
+}
+
+/// Resolve the event log API once. Returns None on any failure, in which case
+/// the event log scan is simply skipped (it is diagnostic only).
+fn evt_api() -> Option<&'static EvtApi> {
+    use std::sync::OnceLock;
+    static API: OnceLock<Option<EvtApi>> = OnceLock::new();
+    API.get_or_init(|| unsafe {
+        let mut dll: Vec<u16> = "wevtapi.dll".encode_utf16().collect();
+        dll.push(0);
+        let h = LoadLibraryW(dll.as_ptr());
+        if h.is_null() {
+            return None;
+        }
+        let q = GetProcAddress(h, b"EvtQuery\0".as_ptr());
+        let n = GetProcAddress(h, b"EvtNext\0".as_ptr());
+        let r = GetProcAddress(h, b"EvtRender\0".as_ptr());
+        let c = GetProcAddress(h, b"EvtClose\0".as_ptr());
+        if q.is_null() || n.is_null() || r.is_null() || c.is_null() {
+            return None;
+        }
+        Some(EvtApi {
+            query: std::mem::transmute(q),
+            next: std::mem::transmute(n),
+            render: std::mem::transmute(r),
+            close: std::mem::transmute(c),
+        })
+    })
+    .as_ref()
+}
+
+const EVT_QUERY_CHANNEL_PATH: u32 = 0x1;
+const EVT_QUERY_REVERSE_DIRECTION: u32 = 0x200;
+const EVT_RENDER_EVENT_XML: u32 = 0x1;
+const EVT_ERROR_INSUFFICIENT_BUFFER: u32 = 122;
+const EVT_ERROR_NO_MORE_ITEMS: u32 = 259;
+
+/// Return the value of `attr` on the first `<tag ...>` element found in `xml`.
+/// EvtRender writes attributes with single quotes, but accept either quote.
+fn xml_attr(xml: &str, tag: &str, attr: &str) -> Option<String> {
+    let open = format!("<{} ", tag);
+    let start = xml.find(&open)? + open.len();
+    let rest = &xml[start..];
+    let needle = format!("{}=", attr);
+    let s = rest.find(&needle)? + needle.len();
+    let rest = &rest[s..];
+    let quote = rest.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let after = &rest[quote.len_utf8()..];
+    let end = after.find(quote)?;
+    Some(after[..end].to_string())
+}
+
+/// Convert an event XML UTC timestamp such as `2026-10-10T20:45:48.4Z` into a
+/// local `HH:MM:SS`, so it lines up with the app's own (local) log timestamps.
+fn utc_iso_to_local(iso: &str) -> Option<String> {
+    let (date, time) = iso.split_once('T')?;
+    let mut d = date.split('-');
+    let year: u16 = d.next()?.parse().ok()?;
+    let month: u16 = d.next()?.parse().ok()?;
+    let day: u16 = d.next()?.parse().ok()?;
+    let t = time.trim_end_matches('Z');
+    let mut tp = t.split(':');
+    let hour: u16 = tp.next()?.parse().ok()?;
+    let minute: u16 = tp.next()?.parse().ok()?;
+    let second: u16 = tp.next()?.split('.').next()?.parse().ok()?;
+
+    let utc = WinSystemTime {
+        year,
+        month,
+        day_of_week: 0,
+        day,
+        hour,
+        minute,
+        second,
+        milliseconds: 0,
+    };
+    let mut local = WinSystemTime::default();
+    let ok = unsafe { SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) };
+    if ok != 0 {
+        Some(format!(
+            "{:02}:{:02}:{:02}",
+            local.hour, local.minute, local.second
+        ))
+    } else {
+        Some(format!("{:02}:{:02}:{:02} UTC", hour, minute, second))
+    }
+}
+
+/// Return the text of the first `<tag ...>...</tag>` element found in `xml`,
+/// tolerating attributes on the opening tag (e.g. `<EventID Qualifiers="0">`).
+fn xml_tag_text(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}", tag);
+    let start = xml.find(&open)? + open.len();
+    let rest = &xml[start..];
+    let gt = rest.find('>')? + 1;
+    let after = &rest[gt..];
+    let end = after.find('<')?;
+    Some(after[..end].trim().to_string())
+}
+
+/// Does this provider name look like storage / volume / file-system plumbing?
+fn provider_is_storage(provider: &str) -> bool {
+    let p = provider.to_lowercase();
+    p.contains("vds")
+        || p.contains("disk")
+        || p.contains("ntfs")
+        || p.contains("volmgr")
+        || p.contains("volsnap")
+        || p.contains("partmgr")
+        || p.contains("storahci")
+        || p.contains("stornvme")
+        || p.contains("usbstor")
+        || p.contains("usbhub")
+}
+
+/// Turn a rendered event XML document into one readable, disk-relevant line.
+/// `message` is the provider-rendered text used when the event carries no
+/// structured `<Data>` values (e.g. the Ntfs 140 warnings).
+/// Returns None when the event has nothing to do with storage or volumes.
+fn summarize_event_xml(xml: &str, message: Option<&str>) -> Option<String> {
+    let provider = xml_attr(xml, "Provider", "Name").unwrap_or_default();
+
+    let all_data: Vec<String> = {
+        let mut v = Vec::new();
+        let mut hay = xml;
+        while let Some(s) = hay.find("<Data>") {
+            let after = &hay[s + 6..];
+            if let Some(e) = after.find("</Data>") {
+                let t = after[..e].trim().replace('\n', " ").replace('\r', "");
+                if !t.is_empty() {
+                    v.push(t);
+                }
+                hay = &after[e + 7..];
+            } else {
+                break;
+            }
+        }
+        v
+    };
+
+    // Prefer the structured data; fall back to the rendered message.
+    let text = if !all_data.is_empty() {
+        all_data.join(" | ")
+    } else {
+        message
+            .map(|m| m.to_string())
+            .or_else(|| xml_tag_text(xml, "Message"))
+            .unwrap_or_default()
+    };
+    let text_l = text.to_lowercase();
+
+    let provider_relevant = provider_is_storage(&provider);
+    let text_relevant = text_l.contains("physicaldrive")
+        || text_l.contains("harddisk")
+        || text_l.contains("disk ")
+        || text_l.contains("\\device\\harddisk")
+        || text_l.contains("zero sectors")
+        || text_l.contains("volume")
+        || text_l.contains("flush data")
+        || text_l.contains("corruption");
+    if !provider_relevant && !text_relevant {
+        return None;
+    }
+
+    let level = match xml_tag_text(xml, "Level").unwrap_or_default().as_str() {
+        "1" => "Critical",
+        "2" => "Error",
+        "3" => "Warning",
+        _ => "Info",
+    };
+    let id = xml_tag_text(xml, "EventID").unwrap_or_default();
+    let time = xml_attr(xml, "TimeCreated", "SystemTime")
+        .and_then(|t| utc_iso_to_local(&t))
+        .unwrap_or_else(|| "--:--:--".to_string());
+
+    let text: String = text.chars().take(300).collect();
+
+    Some(format!(
+        "[{}] {} {} (id {}): {}",
+        time, level, provider, id, text
+    ))
+}
+
+/// Dump the Windows System event log entries that concern storage, so the real
+/// reason for a failure lands in the log instead of needing to be hunted for in
+/// Event Viewer afterwards.
+pub fn trace_event_log(context: &str, minutes: u32) {
+    trace(&format!("--- System event log scan ({}) ---", context));
+
+    let api = match evt_api() {
+        Some(a) => a,
+        None => {
+            trace("   (event log API unavailable)");
+            trace("--- end System event log scan ---");
+            return;
+        }
+    };
+
+    let channel = to_wide("System");
+    let query_text = format!(
+        "*[System[(Level=1 or Level=2 or Level=3) and \
+         TimeCreated[timediff(@SystemTime) <= {}]]]",
+        (minutes as u64) * 60_000
+    );
+    let query = to_wide(&query_text);
+
+    let result = unsafe {
+        (api.query)(
+            std::ptr::null_mut(),
+            channel.as_ptr(),
+            query.as_ptr(),
+            EVT_QUERY_CHANNEL_PATH | EVT_QUERY_REVERSE_DIRECTION,
+        )
+    };
+    if !raw_valid(result) {
+        let e = unsafe { GetLastError() };
+        trace(&format!(
+            "   (could not open the System log, err {} = {})",
+            e,
+            describe_error(e)
+        ));
+        trace("--- end System event log scan ---");
+        return;
+    }
+
+    let mut shown = 0usize;
+    'outer: loop {
+        let mut events: [HANDLE; 8] = [std::ptr::null_mut(); 8];
+        let mut returned: u32 = 0;
+        let ok = unsafe { (api.next)(result, 8, events.as_mut_ptr(), 1000, 0, &mut returned) };
+        if ok == 0 || returned == 0 {
+            let e = unsafe { GetLastError() };
+            if e != EVT_ERROR_NO_MORE_ITEMS {
+                trace(&format!("   (event enumeration ended, err {})", e));
+            }
+            break;
+        }
+        for &ev in events.iter().take(returned as usize) {
+            let mut used: u32 = 0;
+            let mut props: u32 = 0;
+            let first = unsafe {
+                (api.render)(
+                    std::ptr::null_mut(),
+                    ev,
+                    EVT_RENDER_EVENT_XML,
+                    0,
+                    std::ptr::null_mut(),
+                    &mut used,
+                    &mut props,
+                )
+            };
+            if first == 0 {
+                let e = unsafe { GetLastError() };
+                if e != EVT_ERROR_INSUFFICIENT_BUFFER || used == 0 {
+                    unsafe { (api.close)(ev) };
+                    continue;
+                }
+            }
+            let mut buf: Vec<u16> = vec![0u16; (used as usize / 2) + 1];
+            let second = unsafe {
+                (api.render)(
+                    std::ptr::null_mut(),
+                    ev,
+                    EVT_RENDER_EVENT_XML,
+                    (buf.len() * 2) as u32,
+                    buf.as_mut_ptr() as *mut c_void,
+                    &mut used,
+                    &mut props,
+                )
+            };
+            if second != 0 {
+                let xml = from_wide(&buf);
+                if let Some(line) = summarize_event_xml(&xml, None) {
+                    trace(&format!("   {}", line));
+                    shown += 1;
+                }
+            }
+            unsafe { (api.close)(ev) };
+            if shown >= 25 {
+                break 'outer;
+            }
+        }
+    }
+    unsafe { (api.close)(result) };
+
+    if shown == 0 {
+        trace("   (no disk-related errors or warnings in the System log)");
+    }
+    trace("--- end System event log scan ---");
 }
 
 fn read_line() -> String {
@@ -927,14 +1326,16 @@ fn run_diskpart_timeout(script: &str, timeout: Duration) -> bool {
 
     // Emit whatever diskpart wrote. Console programs buffer their output when
     // not attached to a console, so this often only arrives once it has exited.
-    let mut combined = String::new();
+    // Keep a copy: the lines themselves are the only real diagnosis of a
+    // diskpart failure, and the exit code on its own says almost nothing.
+    let mut captured = String::new();
     for p in [&out_path, &err_path] {
         if let Ok(text) = fs::read_to_string(p) {
             for line in text.lines() {
                 if !line.trim().is_empty() {
                     log("DATA", line.trim_end());
-                    combined.push_str(line.trim_end());
-                    combined.push('\n');
+                    captured.push_str(line);
+                    captured.push('\n');
                 }
             }
         }
@@ -949,13 +1350,29 @@ fn run_diskpart_timeout(script: &str, timeout: Duration) -> bool {
         }
     }
 
-    // diskpart exits 0 even when a command inside the script fails, so the
-    // exit code on its own is not a reliable answer. Judge it by what diskpart
-    // actually printed.
+    // diskpart exits 0 even when the command inside the script failed, so the
+    // exit code is not the answer. Diagnose from what it printed.
     let mut ok = match status {
         Some(s) if s.success() => true,
         Some(s) => {
-            log("ERROR", &format!("diskpart exited with {:?}", s.code()));
+            let code = s.code().unwrap_or(0);
+            let hresult = code as u32;
+            log(
+                "ERROR",
+                &format!(
+                    "diskpart exited with code {} (HRESULT 0x{:08X}, Win32 {} = {})",
+                    code,
+                    hresult,
+                    hresult & 0xFFFF,
+                    describe_error(hresult & 0xFFFF)
+                ),
+            );
+            trace_io(
+                "diskpart",
+                &format!("exit code {}", code),
+                false,
+                hresult & 0xFFFF,
+            );
             false
         }
         None => {
@@ -967,34 +1384,257 @@ fn run_diskpart_timeout(script: &str, timeout: Duration) -> bool {
     };
 
     if ok {
-        for line in combined.lines() {
+        // Look for the failure phrases diskpart prints. Each one is matched to
+        // the actual cause so the log says why it failed rather than just
+        // reporting that it did.
+        for line in captured.lines() {
             let low = line.to_ascii_lowercase();
-            if low.contains("virtual disk service error")
-                || low.contains("diskpart has encountered an error")
-                || low.contains("the requested operation failed")
-                || low.contains("access is denied")
-                || low.contains("cannot find the file")
-            {
-                log("ERROR", &format!("diskpart reported: {}", line.trim()));
-                if low.contains("access is denied") {
-                    log(
-                        "ERROR",
-                        "Windows refused access to the drive. Something still had it open, such as \
-                         an Explorer window on that drive.",
-                    );
-                }
+            let reason: Option<&str> = if low.contains("cannot zero sectors") {
+                Some(
+                    "The drive refused a write that Windows required. Virtual Disk Service \
+                     logs this as \"Cannot zero sectors on disk\". Reads still work, so the \
+                     drive itself is refusing writes - this is the hardware failing, not a \
+                     locked file. Try another USB port; if it persists the drive is worn out.",
+                )
+            } else if low.contains("no usable free extent") {
+                Some(
+                    "Windows found no free space to create a partition in. Either the old \
+                     partition table was not actually cleared, or the disk has 4 primary \
+                     partitions already. Run Re-scan so the app reads the current layout.",
+                )
+            } else if low.contains("access is denied") {
+                Some(
+                    "Windows denied access to the drive. Check the System event log under \
+                     'VDS Basic Provider' for the specific reason - if it says the disk could \
+                     not be written to, the drive is failing.",
+                )
+            } else if low.contains("is marked offline") {
+                Some("The disk is marked offline. Bring it online in Disk Management first.")
+            } else if low.contains("read-only") || low.contains("write-protected") {
+                Some("The device is write protected, so it cannot be formatted.")
+            } else if low.contains("virtual disk service error") {
+                Some("Virtual Disk Service rejected the command. The line above has the reason.")
+            } else if low.contains("the system cannot find") {
+                Some("The disk was not found. It may have been unplugged or dropped off the bus.")
+            } else if low.contains("media is write protected") {
+                Some("The media is write protected.")
+            } else {
+                None
+            };
+            if let Some(why) = reason {
+                log("ERROR", &format!("diskpart said: {}", line.trim()));
+                log("ERROR", &format!("  meaning: {}", why));
                 ok = false;
             }
         }
     }
+
+    if !ok {
+        log(
+            "ERROR",
+            "The rebuild step failed. The drive has NOT been formatted. Check the lines above \
+             for the specific reason.",
+        );
+        // Whatever Windows said about this disk in the last few minutes is the
+        // authoritative reason. Put it in the trace so a failure can be read
+        // without opening Event Viewer.
+        trace_event_log("diskpart failure", 10);
+    }
     ok
 }
 
-/// Quick rebuild: clean -> create -> format -> assign. Old data is simply
-/// discarded (no overwrite), so this is fast.
+// SetFilePointerEx move method: seek from the start of the file.
+const FILE_BEGIN: u32 = 0;
+
+/// Blank the MBR by hand, then let diskpart create and format.
+///
+/// `diskpart clean` fails on some USB sticks with "Cannot zero sectors on disk"
+/// (Virtual Disk Service, error 5). When that happens the old partition survives
+/// and `create partition primary` then fails with "no usable free extent".
+///
+/// Writing the first 34 sectors ourselves is the same operation `clean` does,
+/// through a path that is accepted. CRITICAL: the MBR boot signature 0x55AA at
+/// offset 510 must be written back. Zeroing the whole sector flat leaves
+/// offset 510 as 0x0000, Windows then refuses to see the disk as MBR at all,
+/// and diskpart fails with ERROR_INVALID_PARAMETER instead. An earlier version
+/// of this function made exactly that mistake.
+fn blank_mbr(disk: u32) -> bool {
+    let path = format!("\\\\.\\PhysicalDrive{}", disk);
+    let wide = to_wide(&path);
+    trace(&format!(
+        "blank_mbr: opening {} for read+write, share read+write",
+        path
+    ));
+    let h = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if !raw_valid(h) {
+        let err = unsafe { GetLastError() };
+        log(
+            "ERROR",
+            &format!(
+                "could not open {} to blank the MBR (err {} = {})",
+                path,
+                err,
+                describe_error(err)
+            ),
+        );
+        trace_io("CreateFileW", &path, false, err);
+        trace_event_log("could not open the physical disk", 10);
+        return false;
+    }
+    trace_io("CreateFileW", &path, true, 0);
+
+    const SECTOR: u64 = 512;
+    const SECTORS: u64 = 34; // MBR plus the GPT header/table areas
+    let total = SECTORS * SECTOR;
+    let mut backing = vec![0u64; total as usize / 8 + 1024];
+    let base = backing.as_mut_ptr() as usize;
+    let aligned = (base + 4095) & !4095usize;
+    let buf: &mut [u8] =
+        unsafe { std::slice::from_raw_parts_mut(aligned as *mut u8, total as usize) };
+
+    // Boot signature for an MBR with no partitions: 0x55 then 0xAA at 510/511.
+    buf[510] = 0x55;
+    buf[511] = 0xAA;
+
+    let mut ok = true;
+    trace(&format!(
+        "blank_mbr: writing {} sectors ({} bytes) starting at byte 0",
+        SECTORS, total
+    ));
+    trace(&format!(
+        "blank_mbr: sector 0 has the MBR boot signature 0x55AA at offset 510 written back"
+    ));
+
+    for sector in 0..SECTORS {
+        let mut done: DWORD = 0;
+        let seek = unsafe {
+            SetFilePointerEx(
+                h,
+                (sector * SECTOR) as i64,
+                std::ptr::null_mut(),
+                FILE_BEGIN,
+            )
+        };
+        if seek == 0 {
+            let err = unsafe { GetLastError() };
+            log(
+                "ERROR",
+                &format!(
+                    "seek to sector {} of {} failed (err {} = {})",
+                    sector,
+                    path,
+                    err,
+                    describe_error(err)
+                ),
+            );
+            trace_io(
+                "SetFilePointerEx",
+                &format!("sector {} (byte {})", sector, sector * SECTOR),
+                false,
+                err,
+            );
+            ok = false;
+            break;
+        }
+        let w = unsafe {
+            WriteFile(
+                h,
+                buf.as_ptr() as *const c_void,
+                SECTOR as DWORD,
+                &mut done,
+                std::ptr::null_mut(),
+            )
+        };
+        if w == 0 || done != SECTOR as DWORD {
+            let err = unsafe { GetLastError() };
+            log(
+                "ERROR",
+                &format!(
+                    "write to sector {} (byte {}) of {} failed: err {} = {}",
+                    sector,
+                    sector * SECTOR,
+                    path,
+                    err,
+                    describe_error(err)
+                ),
+            );
+            log(
+                "ERROR",
+                &format!(
+                    "  sectors 0 to {} had already been written successfully, so the drive \
+                     accepts writes near the start but refuses this offset.",
+                    sector.saturating_sub(1)
+                ),
+            );
+            trace_io(
+                "WriteFile",
+                &format!("sector {} (byte {})", sector, sector * SECTOR),
+                false,
+                err,
+            );
+            trace_event_log("MBR write refused", 10);
+            ok = false;
+            break;
+        }
+        trace_io(
+            "WriteFile",
+            &format!("sector {} (byte {})", sector, sector * SECTOR),
+            true,
+            0,
+        );
+    }
+    unsafe {
+        let flushed = FlushFileBuffers(h);
+        trace_io("FlushFileBuffers", &path, flushed != 0, 0);
+        CloseHandle(h);
+    }
+    if ok {
+        log("INFO", &format!("blanked the MBR on {} by hand", path));
+        trace("blank_mbr: SUCCESS");
+    }
+    ok
+}
+
+/// Quick rebuild: blank the MBR -> create -> format -> assign.
 fn diskpart_rebuild(disk: u32, letter: char, fs_kind: &str) -> bool {
+    // Windows refuses raw writes to sectors owned by a mounted volume
+    // (ACCESS_DENIED / "Cannot zero sectors"). Both our own MBR write and
+    // diskpart's `clean` hit this. Step 1 is therefore: lock and dismount every
+    // volume on the disk and hold it while we wipe the partition table.
+    let locked = lock_volumes_on_disk(disk);
+
+    // Step 2: wipe the partition table through the raw disk handle while the
+    // volume is still locked, then release the lock before diskpart runs so it
+    // is free to rewrite the disk.
+    let blanked = blank_mbr(disk);
+    for h in &locked {
+        unsafe { CloseHandle(*h) };
+    }
+
+    if !blanked {
+        // Fallback: let diskpart try to clean on its own.
+        log(
+            "WARN",
+            "direct MBR blank failed, falling back to diskpart clean",
+        );
+        if !run_diskpart(&format!("select disk {}\r\nclean\r\n", disk)) {
+            return false;
+        }
+    }
+
+    // Step 3: create the partition and quick-format it.
     let script = format!(
-        "select disk {}\r\nclean\r\ncreate partition primary\r\nformat fs={} quick label=DATA\r\nassign letter={}\r\n",
+        "select disk {}\r\ncreate partition primary\r\nformat fs={} quick label=DATA\r\nassign letter={}\r\n",
         disk,
         fs_kind.to_ascii_lowercase(),
         letter
@@ -1008,7 +1648,20 @@ fn diskpart_rebuild(disk: u32, letter: char, fs_kind: &str) -> bool {
 
 /// Remove all partitions so the raw disk can be overwritten by hand.
 fn diskpart_clean(disk: u32) -> bool {
-    run_diskpart(&format!("select disk {}\r\nclean\r\n", disk))
+    let locked = lock_volumes_on_disk(disk);
+    let res = if blank_mbr(disk) {
+        true
+    } else {
+        // Release first so diskpart can act, then try it.
+        for h in &locked {
+            unsafe { CloseHandle(*h) };
+        }
+        return run_diskpart(&format!("select disk {}\r\nclean\r\n", disk));
+    };
+    for h in &locked {
+        unsafe { CloseHandle(*h) };
+    }
+    res
 }
 
 /// Create one primary partition, quick-format it and assign the drive letter.
@@ -1116,28 +1769,6 @@ const ERROR_WRITE_PROTECT: u32 = 19;
 const ERROR_SECTOR_NOT_FOUND: u32 = 55;
 const ERROR_DISK_FULL: u32 = 112;
 const ERROR_DEVICE_NOT_CONNECTED: u32 = 433;
-const ERROR_IO_DEVICE: u32 = 1117;
-
-/// How many times a single chunk is retried before the wipe is abandoned.
-/// The OS retries these itself (System log, event id 153) and usually wins, so
-/// aborting on the first failed write threw away hours of work over a hiccup.
-const WRITE_RETRIES: u32 = 8;
-
-/// True for errors that mean "the drive hiccuped", not "the drive is dead".
-/// Worth another attempt rather than failing the whole wipe.
-fn transient_write_error(err: u32) -> bool {
-    matches!(
-        err,
-        5     // ERROR_ACCESS_DENIED - device busy while the bus resets
-        | 6    // ERROR_INVALID_HANDLE
-        | 21   // ERROR_NOT_READY
-        | 31   // ERROR_GEN_FAILURE
-        | 1117 // ERROR_IO_DEVICE - reported an error under sustained load
-        | 1219 // ERROR_REQUEST_ABORTED
-        | 1611 // ERROR_BUS_RESET
-        | 1617 // ERROR_DEVICE_REMOVED - USB re-enumerating
-    )
-}
 
 /// Human-readable description of the wipe mode.
 pub fn pass_label(passes: u32) -> String {
@@ -1211,16 +1842,63 @@ fn fill_buffer(buf: &mut [u8], pass: &Pass, rng: &mut Rng) {
 /// overwrite and must be closed afterwards.
 fn lock_volumes_on_disk(disk: u32) -> Vec<HANDLE> {
     let mut locked: Vec<HANDLE> = Vec::new();
+
+    // Windows refuses raw writes to sectors owned by a *mounted* volume. The
+    // only way through is to lock and dismount that volume and keep it locked
+    // while we write. We look for candidate volumes two ways so nothing is
+    // missed:
+    //   1. every mounted drive letter (G:, H:, ...) - the reliable path for a
+    //      USB stick that Windows has mounted
+    //   2. every volume GUID path - for volumes with no drive letter
+    //
+    // A volume is only touched if it is either known to live on `disk`, or its
+    // layout could not be read (in which case we try it, since a broken volume
+    // is exactly the case that blocks us). The system drive is never locked.
+    let sys = std::env::var("SystemDrive")
+        .unwrap_or_else(|_| "C:".to_string())
+        .to_uppercase();
+
+    let mut candidates: Vec<String> = Vec::new();
+    let mask = unsafe { GetLogicalDrives() };
+    for i in 0..26u32 {
+        if mask & (1 << i) != 0 {
+            let letter = (b'A' + i as u8) as char;
+            let root = format!("{}:", letter);
+            if root.eq_ignore_ascii_case(&sys) {
+                continue;
+            }
+            candidates.push(format!("\\\\.\\{}", root));
+        }
+    }
+
     let mut name = vec![0u16; 260];
     unsafe {
         let find = FindFirstVolumeW(name.as_mut_ptr(), name.len() as DWORD);
-        if !raw_valid(find) {
-            return locked;
+        if raw_valid(find) {
+            loop {
+                let v = from_wide(&name);
+                let v = v.trim_end_matches('\0');
+                if !v.is_empty() {
+                    candidates.push(v.to_string());
+                }
+                if FindNextVolumeW(find, name.as_mut_ptr(), name.len() as DWORD) == 0 {
+                    break;
+                }
+            }
+            FindVolumeClose(find);
         }
-        loop {
-            let vol = from_wide(&name);
-            let wide = to_wide(vol.trim_end_matches('\0'));
-            let h = CreateFileW(
+    }
+
+    trace(&format!(
+        "lock_volumes_on_disk: checking {} volume(s) for disk {}",
+        candidates.len(),
+        disk
+    ));
+
+    for vol in candidates {
+        let wide = to_wide(&vol);
+        let h = unsafe {
+            CreateFileW(
                 wide.as_ptr(),
                 GENERIC_READ | GENERIC_WRITE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -1228,64 +1906,87 @@ fn lock_volumes_on_disk(disk: u32) -> Vec<HANDLE> {
                 OPEN_EXISTING,
                 0,
                 std::ptr::null_mut(),
-            );
-            if raw_valid(h) {
-                let mut ex = VolumeDiskExtents {
-                    number_of_disk_extents: 0,
-                    extents: [DiskExtent::default(); 16],
-                };
-                let mut br: DWORD = 0;
-                let ok = DeviceIoControl(
-                    h,
-                    IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
-                    std::ptr::null_mut(),
-                    0,
-                    &mut ex as *mut _ as *mut c_void,
-                    std::mem::size_of::<VolumeDiskExtents>() as DWORD,
-                    &mut br,
-                    std::ptr::null_mut(),
-                );
-                let n = ex.number_of_disk_extents.min(16) as usize;
-                let on_disk =
-                    ok != 0 && n > 0 && ex.extents[..n].iter().any(|e| e.disk_number == disk);
-                if on_disk {
-                    let mut junk: DWORD = 0;
-                    let lk = DeviceIoControl(
-                        h,
-                        FSCTL_LOCK_VOLUME,
-                        std::ptr::null_mut(),
-                        0,
-                        std::ptr::null_mut(),
-                        0,
-                        &mut junk,
-                        std::ptr::null_mut(),
-                    );
-                    let dm = DeviceIoControl(
-                        h,
-                        FSCTL_DISMOUNT_VOLUME,
-                        std::ptr::null_mut(),
-                        0,
-                        std::ptr::null_mut(),
-                        0,
-                        &mut junk,
-                        std::ptr::null_mut(),
-                    );
-                    if lk != 0 || dm != 0 {
-                        // Keep the handle open (and locked) for the whole overwrite.
-                        locked.push(h);
-                    } else {
-                        CloseHandle(h);
-                    }
-                } else {
-                    CloseHandle(h);
-                }
-            }
-            if FindNextVolumeW(find, name.as_mut_ptr(), name.len() as DWORD) == 0 {
-                break;
-            }
+            )
+        };
+        if !raw_valid(h) {
+            let e = unsafe { GetLastError() };
+            trace_io("CreateFileW(volume)", &vol, false, e);
+            continue;
         }
-        FindVolumeClose(find);
+
+        // Find out which physical disk this volume sits on.
+        let mut ex = VolumeDiskExtents {
+            number_of_disk_extents: 0,
+            extents: [DiskExtent::default(); 16],
+        };
+        let mut br: DWORD = 0;
+        let ok = unsafe {
+            DeviceIoControl(
+                h,
+                IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+                std::ptr::null_mut(),
+                0,
+                &mut ex as *mut _ as *mut c_void,
+                std::mem::size_of::<VolumeDiskExtents>() as DWORD,
+                &mut br,
+                std::ptr::null_mut(),
+            )
+        };
+        let n = ex.number_of_disk_extents.min(16) as usize;
+        if ok != 0 && n > 0 && !ex.extents[..n].iter().any(|e| e.disk_number == disk) {
+            // Definitely a different disk: leave it completely alone.
+            unsafe { CloseHandle(h) };
+            continue;
+        }
+
+        // Either it is on our disk, or we could not read its layout.
+        let mut junk: DWORD = 0;
+        let lk = unsafe {
+            DeviceIoControl(
+                h,
+                FSCTL_LOCK_VOLUME,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut junk,
+                std::ptr::null_mut(),
+            )
+        };
+        let lk_err = if lk == 0 {
+            unsafe { GetLastError() }
+        } else {
+            0
+        };
+        trace_io("FSCTL_LOCK_VOLUME", &vol, lk != 0, lk_err);
+
+        let dm = unsafe {
+            DeviceIoControl(
+                h,
+                FSCTL_DISMOUNT_VOLUME,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut junk,
+                std::ptr::null_mut(),
+            )
+        };
+        let dm_err = if dm == 0 {
+            unsafe { GetLastError() }
+        } else {
+            0
+        };
+        trace_io("FSCTL_DISMOUNT_VOLUME", &vol, dm != 0, dm_err);
+
+        if lk != 0 || dm != 0 {
+            log("INFO", &format!("locked/dismounted {}", vol));
+            locked.push(h);
+        } else {
+            unsafe { CloseHandle(h) };
+        }
     }
+
     locked
 }
 
@@ -1404,94 +2105,105 @@ fn overwrite_disk(disk: u32, passes: u32) -> bool {
         let mut rng = Rng::new(seed ^ (i as u64).wrapping_mul(0x1000_0000_1B3));
         let mut written: u64 = 0;
         let mut last_pct: u64 = u64::MAX;
+        trace(&format!(
+            "overwrite: pass {}/{} starting, {} bytes total, chunk {} bytes",
+            i + 1,
+            schedule.len(),
+            total,
+            CHUNK
+        ));
         while written < total {
             // Honour a pause request between chunks (checked once per MiB).
             wait_if_paused();
             let n = std::cmp::min(CHUNK as u64, total - written) as usize;
             fill_buffer(&mut buf[..n], pass, &mut rng);
-
-            // Retry the same chunk on transient errors. A drive under
-            // sustained load often reports one bad write and then accepts the
-            // next one, and Windows retries these internally anyway (System
-            // log event 153). Giving up on the first failure killed a
-            // multi-hour wipe over a single hiccup.
-            let mut attempt: u32 = 0;
-            let mut done: DWORD;
-            loop {
-                done = 0;
-                let w = unsafe {
-                    WriteFile(
-                        h,
-                        buf.as_ptr() as *const c_void,
-                        n as DWORD,
-                        &mut done,
-                        std::ptr::null_mut(),
-                    )
-                };
-                if w != 0 && done > 0 {
-                    break;
-                }
+            let mut done: DWORD = 0;
+            let w = unsafe {
+                WriteFile(
+                    h,
+                    buf.as_ptr() as *const c_void,
+                    n as DWORD,
+                    &mut done,
+                    std::ptr::null_mut(),
+                )
+            };
+            if w == 0 || done == 0 {
                 let err = unsafe { GetLastError() };
-                attempt += 1;
-                if attempt >= WRITE_RETRIES || !transient_write_error(err) {
-                    log(
-                        "ERROR",
-                        &format!("write failed at offset {} (err {}).", written, err),
-                    );
-                    // Say what actually went wrong - a dropped USB device is
-                    // the single most common cause and needs completely
-                    // different advice from a generic write error.
-                    match err {
-                        ERROR_DEVICE_NOT_CONNECTED => log(
-                            "ERROR",
-                            "The USB device disconnected mid-write. This is a hardware / \
-                             connection problem - the port, cable or drive dropped out under \
-                             load - not a fault in this tool. Reconnect the drive and try a \
-                             different USB port.",
-                        ),
-                        ERROR_IO_DEVICE => log(
-                            "ERROR",
-                            "The drive reported an I/O error under sustained load. It managed a \
-                             previous pass and then stalled, which usually means the device is \
-                             overheating or worn out rather than a connection fault. Let it cool \
-                             and try a single pass instead of several.",
-                        ),
-                        ERROR_DISK_FULL => log(
-                            "ERROR",
-                            "The drive ran out of addressable space - it may have failed or be a \
-                             fake capacity device.",
-                        ),
-                        ERROR_WRITE_PROTECT => log(
-                            "ERROR",
-                            "The device is write-protected, so it could not be overwritten.",
-                        ),
-                        ERROR_SECTOR_NOT_FOUND => log(
-                            "ERROR",
-                            "The drive reported a bad sector and cannot be overwritten reliably. \
-                             It has probably failed - do not trust it.",
-                        ),
-                        _ => {}
-                    }
-                    ok_all = false;
-                    break;
-                }
-                // Back off so a struggling device gets a moment instead of
-                // being hammered while it recovers.
-                let wait_ms = 250u64 * attempt as u64;
                 log(
-                    "WARN",
+                    "ERROR",
                     &format!(
-                        "write hiccup at offset {} (err {}), retry {}/{} in {} ms ...",
-                        written, err, attempt, WRITE_RETRIES, wait_ms
+                        "write failed at offset {} ({:.2} GB in) - Win32 error {} = {}",
+                        written,
+                        written as f64 / 1e9,
+                        err,
+                        describe_error(err)
                     ),
                 );
-                let give_up = Instant::now() + Duration::from_millis(wait_ms);
-                while Instant::now() < give_up {
-                    wait_if_paused();
-                    std::thread::sleep(Duration::from_millis(50));
+                trace_io(
+                    "WriteFile",
+                    &format!(
+                        "pass {}/{} offset {} ({:.2} GB in), {} bytes",
+                        i + 1,
+                        schedule.len(),
+                        written,
+                        written as f64 / 1e9,
+                        n
+                    ),
+                    false,
+                    err,
+                );
+                trace_event_log("overwrite write refused", 10);
+                // Say what actually went wrong - a dropped USB device is the
+                // single most common cause and needs completely different
+                // advice from a generic write error.
+                match err {
+                    ERROR_DEVICE_NOT_CONNECTED => log(
+                        "ERROR",
+                        "The USB device disconnected mid-write. This is a hardware / connection \
+                         problem - the port, cable or drive dropped out under load - not a fault in \
+                         this tool. Reconnect the drive and try a different USB port.",
+                    ),
+                    ERROR_DISK_FULL => log(
+                        "ERROR",
+                        "The drive ran out of addressable space - it may have failed or be a fake \
+                         capacity device.",
+                    ),
+                    ERROR_WRITE_PROTECT => log(
+                        "ERROR",
+                        "The device is write-protected, so it could not be overwritten.",
+                    ),
+                    ERROR_SECTOR_NOT_FOUND => log(
+                        "ERROR",
+                        "The drive reported a bad sector and cannot be overwritten reliably. \
+                         It has probably failed - do not trust it.",
+                    ),
+                    1117 => log(
+                        "ERROR",
+                        "The drive reported an I/O error under sustained load (ERROR_IO_DEVICE). \
+                         It usually means the device is overheating or worn out: check the System \
+                         event log for 'disk' event id 153, which shows Windows retrying the same \
+                         sector. A single pass usually still works where multiple passes stall.",
+                    ),
+                    1217 => log(
+                        "ERROR",
+                        "Windows aborted the write (ERROR_REQUEST_ABORTED). Usually transient - \
+                         another program touched the drive mid-wipe.",
+                    ),
+                    21 => log(
+                        "ERROR",
+                        "The drive reported 'not ready' (ERROR_NOT_READY). The device is not \
+                         accepting media access; re-seat it and try again.",
+                    ),
+                    _ => log(
+                        "ERROR",
+                        &format!(
+                            "Unrecognised write error {}. Look in the System event log (providers \
+                             'disk' and 'usbstor') for what Windows reported at the same moment.",
+                            err
+                        ),
+                    ),
                 }
-            }
-            if !ok_all {
+                ok_all = false;
                 break;
             }
             written += done as u64;
@@ -1749,17 +2461,7 @@ pub fn process_target(letter: char, fs_kind: &str, interactive: bool, passes: u3
         ));
         say("\r\n");
         spinner_start("working");
-        // Dismount before rebuilding. Without this the volume is still mounted
-        // and Windows refuses the clean with "Access is denied", which is what
-        // made quick wipes fail whenever the drive was still open.
-        let quick_locked = lock_volumes_on_disk(disk);
-        std::thread::sleep(Duration::from_secs(2));
         let rebuilt = diskpart_rebuild(disk, letter, fs_kind);
-        for h in &quick_locked {
-            unsafe {
-                CloseHandle(*h);
-            }
-        }
         spinner_stop();
         if !rebuilt {
             log(
