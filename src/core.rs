@@ -324,7 +324,9 @@ pub fn is_elevated() -> bool {
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
             return false;
         }
-        let mut elev = TokenElevation { token_is_elevated: 0 };
+        let mut elev = TokenElevation {
+            token_is_elevated: 0,
+        };
         let mut ret: DWORD = 0;
         let ok = GetTokenInformation(
             token,
@@ -662,7 +664,12 @@ pub fn volume_info(letter: char) -> Option<VolumeInfo> {
 /// lower-integrity process, not notifications sent *down* to the shell.
 pub fn refresh_explorer() {
     unsafe {
-        SHChangeNotify(SHCNE_ASSOCCHANGED, 0, std::ptr::null_mut(), std::ptr::null_mut());
+        SHChangeNotify(
+            SHCNE_ASSOCCHANGED,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
         for ch in logical_drives() {
             let root = to_wide(&format!("{}:\\", ch));
             let ptr = root.as_ptr() as *mut c_void;
@@ -716,7 +723,10 @@ fn wait_if_paused() {
     if !flag.exists() {
         return;
     }
-    log("INFO", "PAUSED - writing is on hold. Click Resume to continue.");
+    log(
+        "INFO",
+        "PAUSED - writing is on hold. Click Resume to continue.",
+    );
     while flag.exists() {
         std::thread::sleep(Duration::from_millis(250));
     }
@@ -760,7 +770,10 @@ fn wipe_files(letter: char) {
                     fs::remove_file(&path)
                 };
                 if let Err(e) = res {
-                    log("WARN", &format!("could not remove {}: {}", path.display(), e));
+                    log(
+                        "WARN",
+                        &format!("could not remove {}: {}", path.display(), e),
+                    );
                 }
             }
         }
@@ -819,14 +832,20 @@ fn run_diskpart_timeout(script: &str, timeout: Duration) -> bool {
     let out_file = match fs::File::create(&out_path) {
         Ok(f) => f,
         Err(e) => {
-            log("ERROR", &format!("could not open diskpart output log: {}", e));
+            log(
+                "ERROR",
+                &format!("could not open diskpart output log: {}", e),
+            );
             return false;
         }
     };
     let err_file = match fs::File::create(&err_path) {
         Ok(f) => f,
         Err(e) => {
-            log("ERROR", &format!("could not open diskpart error log: {}", e));
+            log(
+                "ERROR",
+                &format!("could not open diskpart error log: {}", e),
+            );
             return false;
         }
     };
@@ -977,7 +996,10 @@ fn diskpart_format(disk: u32, letter: char, fs_kind: &str) -> bool {
         std::thread::sleep(Duration::from_secs(3));
         return true;
     }
-    log("WARN", &format!("{}: first format attempt failed - retrying.", letter));
+    log(
+        "WARN",
+        &format!("{}: first format attempt failed - retrying.", letter),
+    );
     std::thread::sleep(Duration::from_secs(3));
     let ok = run_diskpart(&script);
     if ok {
@@ -1253,7 +1275,9 @@ fn overwrite_disk(disk: u32, passes: u32) -> bool {
         if attempt == 19 {
             log(
                 "ERROR",
-                &format!("could not open {} for writing (err {}).", path, unsafe { GetLastError() }),
+                &format!("could not open {} for writing (err {}).", path, unsafe {
+                    GetLastError()
+                }),
             );
             unsafe {
                 for lh in &locked {
@@ -1280,7 +1304,10 @@ fn overwrite_disk(disk: u32, passes: u32) -> bool {
             std::ptr::null_mut(),
         );
         if ok == 0 || info.length <= 0 {
-            log("ERROR", &format!("could not read size of {} (err {}).", path, GetLastError()));
+            log(
+                "ERROR",
+                &format!("could not read size of {} (err {}).", path, GetLastError()),
+            );
             CloseHandle(h);
             for lh in &locked {
                 CloseHandle(*lh);
@@ -1333,7 +1360,13 @@ fn overwrite_disk(disk: u32, passes: u32) -> bool {
             fill_buffer(&mut buf[..n], pass, &mut rng);
             let mut done: DWORD = 0;
             let w = unsafe {
-                WriteFile(h, buf.as_ptr() as *const c_void, n as DWORD, &mut done, std::ptr::null_mut())
+                WriteFile(
+                    h,
+                    buf.as_ptr() as *const c_void,
+                    n as DWORD,
+                    &mut done,
+                    std::ptr::null_mut(),
+                )
             };
             if w == 0 || done == 0 {
                 let err = unsafe { GetLastError() };
@@ -1371,10 +1404,17 @@ fn overwrite_disk(disk: u32, passes: u32) -> bool {
                 break;
             }
             written += done as u64;
-            let pct = if total > 0 { written * 100 / total } else { 100 };
+            let pct = if total > 0 {
+                written * 100 / total
+            } else {
+                100
+            };
             if pct != last_pct {
                 last_pct = pct;
-                log("DATA", &format!("  pass {}/{} : {}%", i + 1, schedule.len(), pct));
+                log(
+                    "DATA",
+                    &format!("  pass {}/{} : {}%", i + 1, schedule.len(), pct),
+                );
             }
         }
         unsafe {
@@ -1419,7 +1459,10 @@ pub fn process_target(letter: char, fs_kind: &str, interactive: bool, passes: u3
     log("INFO", &format!("########## TARGET {}: ##########", letter));
 
     if letter == system_drive_letter() {
-        log("SKIP", &format!("{}: is the Windows system drive - protected.", letter));
+        log(
+            "SKIP",
+            &format!("{}: is the Windows system drive - protected.", letter),
+        );
         return true;
     }
 
@@ -1427,7 +1470,11 @@ pub fn process_target(letter: char, fs_kind: &str, interactive: bool, passes: u3
     if dt != DRIVE_REMOVABLE && dt != DRIVE_FIXED {
         log(
             "SKIP",
-            &format!("{}: is a {} drive, not a local disk - refusing.", letter, drive_type_name(dt)),
+            &format!(
+                "{}: is a {} drive, not a local disk - refusing.",
+                letter,
+                drive_type_name(dt)
+            ),
         );
         return true;
     }
@@ -1437,15 +1484,24 @@ pub fn process_target(letter: char, fs_kind: &str, interactive: bool, passes: u3
                 "WARN",
                 &format!("{}: is a FIXED disk (not removable) - double-check this is really your USB drive.", letter),
             );
-            let again = prompt(&format!("Type the letter {} again to confirm wiping this fixed disk: ", letter));
+            let again = prompt(&format!(
+                "Type the letter {} again to confirm wiping this fixed disk: ",
+                letter
+            ));
             if !again.eq_ignore_ascii_case(&letter.to_string()) {
-                log("SKIP", &format!("{}: fixed disk not confirmed - skipping.", letter));
+                log(
+                    "SKIP",
+                    &format!("{}: fixed disk not confirmed - skipping.", letter),
+                );
                 return true;
             }
         } else {
             log(
                 "WARN",
-                &format!("{}: FIXED disk - proceeding (confirmed in the GUI).", letter),
+                &format!(
+                    "{}: FIXED disk - proceeding (confirmed in the GUI).",
+                    letter
+                ),
             );
         }
     }
@@ -1455,18 +1511,33 @@ pub fn process_target(letter: char, fs_kind: &str, interactive: bool, passes: u3
         None => {
             log(
                 "ERROR",
-                &format!("{}: no partition found (CD/DVD, network, or not present).", letter),
+                &format!(
+                    "{}: no partition found (CD/DVD, network, or not present).",
+                    letter
+                ),
             );
             return false;
         }
     };
-    log("INFO", &format!("{}: disk={} part={} mode={}", letter, disk, part, pass_label(passes)));
+    log(
+        "INFO",
+        &format!(
+            "{}: disk={} part={} mode={}",
+            letter,
+            disk,
+            part,
+            pass_label(passes)
+        ),
+    );
 
     // Never multi-pass overwrite a solid-state drive: it does not reliably
     // erase flash cells and it wastes write cycles. External/USB SSDs are
     // reported as Usb, so only internal SSDs are blocked.
     let media = media_kind(letter);
-    log("INFO", &format!("{}: media detected as {}", letter, media.label()));
+    log(
+        "INFO",
+        &format!("{}: media detected as {}", letter, media.label()),
+    );
     if passes >= 1 && media.is_ssd() {
         log(
             "ERROR",
@@ -1483,88 +1554,172 @@ pub fn process_target(letter: char, fs_kind: &str, interactive: bool, passes: u3
 
     let total_steps = if passes >= 1 { 5 } else { 3 };
 
-    say(&format!("   [1/{}] wiping files ................ ", total_steps));
+    say(&format!(
+        "   [1/{}] wiping files ................ ",
+        total_steps
+    ));
     wipe_files(letter);
     sayln("done");
-    log("STEP", &format!("{}: [1/{}] files wiped", letter, total_steps));
+    log(
+        "STEP",
+        &format!("{}: [1/{}] files wiped", letter, total_steps),
+    );
 
     if passes >= 1 {
         // FULL wipe: drop the partitions, overwrite every sector by hand,
         // then create + format a fresh partition.
-        say(&format!("   [2/{}] removing partitions ....... ", total_steps));
+        say(&format!(
+            "   [2/{}] removing partitions ....... ",
+            total_steps
+        ));
         say("\r\n");
         spinner_start("cleaning");
         let cleaned = diskpart_clean(disk);
         spinner_stop();
         if !cleaned {
-            log("ERROR", &format!("{}: could not clean disk - aborting full wipe.", letter));
+            log(
+                "ERROR",
+                &format!("{}: could not clean disk - aborting full wipe.", letter),
+            );
             return false;
         }
-        say(&format!("   [2/{}] removing partitions ....... ", total_steps));
+        say(&format!(
+            "   [2/{}] removing partitions ....... ",
+            total_steps
+        ));
         sayln("done");
-        log("STEP", &format!("{}: [2/{}] partitions removed", letter, total_steps));
+        log(
+            "STEP",
+            &format!("{}: [2/{}] partitions removed", letter, total_steps),
+        );
 
         // Give the OS a moment to release the volume before raw writes.
         std::thread::sleep(Duration::from_secs(2));
 
-        say(&format!("   [3/{}] overwriting disk ({}) ... ", total_steps, pass_label(passes)));
+        say(&format!(
+            "   [3/{}] overwriting disk ({}) ... ",
+            total_steps,
+            pass_label(passes)
+        ));
         say("\r\n");
         spinner_start("overwriting");
         let overwritten = overwrite_disk(disk, passes);
         spinner_stop();
         if !overwritten {
-            log("ERROR", &format!("{}: overwrite FAILED - drive may be left blank.", letter));
+            log(
+                "ERROR",
+                &format!("{}: overwrite FAILED - drive may be left blank.", letter),
+            );
             return false;
         }
-        say(&format!("   [3/{}] overwriting disk ........... ", total_steps));
+        say(&format!(
+            "   [3/{}] overwriting disk ........... ",
+            total_steps
+        ));
         sayln("done");
-        log("STEP", &format!("{}: [3/{}] disk overwritten ({})", letter, total_steps, pass_label(passes)));
+        log(
+            "STEP",
+            &format!(
+                "{}: [3/{}] disk overwritten ({})",
+                letter,
+                total_steps,
+                pass_label(passes)
+            ),
+        );
 
-        say(&format!("   [4/{}] creating + formatting ..... ", total_steps));
+        say(&format!(
+            "   [4/{}] creating + formatting ..... ",
+            total_steps
+        ));
         say("\r\n");
         spinner_start("formatting");
         let formatted = diskpart_format(disk, letter, fs_kind);
         spinner_stop();
         if !formatted {
-            log("ERROR", &format!("{}: format FAILED - drive may be left blank.", letter));
+            log(
+                "ERROR",
+                &format!("{}: format FAILED - drive may be left blank.", letter),
+            );
             return false;
         }
-        say(&format!("   [4/{}] creating + formatting ..... ", total_steps));
+        say(&format!(
+            "   [4/{}] creating + formatting ..... ",
+            total_steps
+        ));
         sayln("done");
-        log("STEP", &format!("{}: [4/{}] partition formatted", letter, total_steps));
+        log(
+            "STEP",
+            &format!("{}: [4/{}] partition formatted", letter, total_steps),
+        );
     } else {
-        say(&format!("   [2/{}] rebuilding partition ....... ", total_steps));
+        say(&format!(
+            "   [2/{}] rebuilding partition ....... ",
+            total_steps
+        ));
         say("\r\n");
         spinner_start("working");
         let rebuilt = diskpart_rebuild(disk, letter, fs_kind);
         spinner_stop();
         if !rebuilt {
-            log("ERROR", &format!("{}: rebuild FAILED - drive may be left empty.", letter));
+            log(
+                "ERROR",
+                &format!("{}: rebuild FAILED - drive may be left empty.", letter),
+            );
             return false;
         }
-        say(&format!("   [2/{}] rebuilding partition ....... ", total_steps));
+        say(&format!(
+            "   [2/{}] rebuilding partition ....... ",
+            total_steps
+        ));
         sayln("done");
-        log("STEP", &format!("{}: [2/{}] partition rebuilt", letter, total_steps));
+        log(
+            "STEP",
+            &format!("{}: [2/{}] partition rebuilt", letter, total_steps),
+        );
     }
 
-    say(&format!("   [{}/{}] verifying .................. ", total_steps, total_steps));
+    say(&format!(
+        "   [{}/{}] verifying .................. ",
+        total_steps, total_steps
+    ));
     match volume_info(letter) {
         Some(v) if v.fs.eq_ignore_ascii_case(fs_kind) => {
-            sayln(&format!("OK  ({}, label '{}', {:.2} GB free)", v.fs, v.label, v.free as f64 / 1e9));
+            sayln(&format!(
+                "OK  ({}, label '{}', {:.2} GB free)",
+                v.fs,
+                v.label,
+                v.free as f64 / 1e9
+            ));
             log(
                 "OK",
-                &format!("{}/{} VERIFIED {} label='{}' {:.2} GB free", total_steps, total_steps, v.fs, v.label, v.free as f64 / 1e9),
+                &format!(
+                    "{}/{} VERIFIED {} label='{}' {:.2} GB free",
+                    total_steps,
+                    total_steps,
+                    v.fs,
+                    v.label,
+                    v.free as f64 / 1e9
+                ),
             );
             true
         }
         Some(v) => {
             sayln(&format!("FAILED (got {})", v.fs));
-            log("ERROR", &format!("{}/{} filesystem is '{}', not {}", total_steps, total_steps, v.fs, fs_kind));
+            log(
+                "ERROR",
+                &format!(
+                    "{}/{} filesystem is '{}', not {}",
+                    total_steps, total_steps, v.fs, fs_kind
+                ),
+            );
             false
         }
         None => {
             sayln("FAILED (could not verify volume)");
-            log("ERROR", &format!("{}/{} could not verify volume", total_steps, total_steps));
+            log(
+                "ERROR",
+                &format!("{}/{} could not verify volume", total_steps, total_steps),
+            );
             false
         }
     }
@@ -1581,9 +1736,27 @@ pub fn run_worker(drives: &[char], fs_kind: &str, passes: u32, log_path: &Path) 
     log("INFO", &format!("Drives   : {:?}", drives));
     log("INFO", &format!("Filesys  : {}", fs_kind));
     log("INFO", &format!("Wipe mode: {}", pass_label(passes)));
-    log("INFO", &format!("Computer : {}", std::env::var("COMPUTERNAME").unwrap_or_default()));
-    log("INFO", &format!("User     : {}", std::env::var("USERNAME").unwrap_or_default()));
-    log("INFO", &format!("SystemDrv: {}", std::env::var("SystemDrive").unwrap_or_default()));
+    log(
+        "INFO",
+        &format!(
+            "Computer : {}",
+            std::env::var("COMPUTERNAME").unwrap_or_default()
+        ),
+    );
+    log(
+        "INFO",
+        &format!(
+            "User     : {}",
+            std::env::var("USERNAME").unwrap_or_default()
+        ),
+    );
+    log(
+        "INFO",
+        &format!(
+            "SystemDrv: {}",
+            std::env::var("SystemDrive").unwrap_or_default()
+        ),
+    );
     log_drives("BEFORE");
 
     let mut fails = 0;
@@ -1638,9 +1811,27 @@ pub fn run_workflow() {
 
     log("INFO", "================ SESSION START ================");
     log("INFO", &format!("Log file : {}", logfile.display()));
-    log("INFO", &format!("Computer : {}", std::env::var("COMPUTERNAME").unwrap_or_default()));
-    log("INFO", &format!("User     : {}", std::env::var("USERNAME").unwrap_or_default()));
-    log("INFO", &format!("SystemDrv: {}", std::env::var("SystemDrive").unwrap_or_default()));
+    log(
+        "INFO",
+        &format!(
+            "Computer : {}",
+            std::env::var("COMPUTERNAME").unwrap_or_default()
+        ),
+    );
+    log(
+        "INFO",
+        &format!(
+            "User     : {}",
+            std::env::var("USERNAME").unwrap_or_default()
+        ),
+    );
+    log(
+        "INFO",
+        &format!(
+            "SystemDrv: {}",
+            std::env::var("SystemDrive").unwrap_or_default()
+        ),
+    );
     log_drives("BEFORE");
 
     sayln("");
@@ -1667,7 +1858,10 @@ pub fn run_workflow() {
     } else {
         "exFAT"
     };
-    log("INFO", &format!("Filesystem choice: '{}' -> {}", fs_input, fs_kind));
+    log(
+        "INFO",
+        &format!("Filesystem choice: '{}' -> {}", fs_input, fs_kind),
+    );
     if fs_kind == "FAT32" {
         log(
             "WARN",

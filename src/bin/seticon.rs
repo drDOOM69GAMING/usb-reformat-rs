@@ -46,9 +46,7 @@ const MUSIC_INDEX_NAME: &str = "_music_index";
 
 fn is_music(name: &str) -> bool {
     match name.rsplit_once('.') {
-        Some((_, ext)) => MUSIC_EXTS
-            .iter()
-            .any(|e| ext.eq_ignore_ascii_case(e)),
+        Some((_, ext)) => MUSIC_EXTS.iter().any(|e| ext.eq_ignore_ascii_case(e)),
         None => false,
     }
 }
@@ -153,7 +151,9 @@ fn main() {
             if !path.is_file() {
                 continue;
             }
-            let Some(fname) = path.file_name() else { continue };
+            let Some(fname) = path.file_name() else {
+                continue;
+            };
             let fname = fname.to_string_lossy().into_owned();
             if !is_music(&fname) {
                 continue;
@@ -167,13 +167,11 @@ fn main() {
     }
     let tracks_bytes: usize = tracks.iter().map(|(_, d)| d.len()).sum();
 
-    let manifest = manifest_path.and_then(|p| {
-        match std::fs::read(p) {
-            Ok(b) => Some(b),
-            Err(e) => {
-                eprintln!("cannot read {}: {}", p, e);
-                exit(2);
-            }
+    let manifest = manifest_path.and_then(|p| match std::fs::read(p) {
+        Ok(b) => Some(b),
+        Err(e) => {
+            eprintln!("cannot read {}: {}", p, e);
+            exit(2);
         }
     });
 
@@ -190,7 +188,11 @@ fn main() {
     unsafe {
         let h = BeginUpdateResourceW(path.as_ptr(), 0);
         if h.is_null() {
-            eprintln!("BeginUpdateResource failed on {} (err {})", pe_path, GetLastError());
+            eprintln!(
+                "BeginUpdateResource failed on {} (err {})",
+                pe_path,
+                GetLastError()
+            );
             exit(1);
         }
 
@@ -205,7 +207,11 @@ fn main() {
                 img.data.len() as u32,
             );
             if ok == 0 {
-                eprintln!("UpdateResource(RT_ICON {}) failed (err {})", i + 1, GetLastError());
+                eprintln!(
+                    "UpdateResource(RT_ICON {}) failed (err {})",
+                    i + 1,
+                    GetLastError()
+                );
                 EndUpdateResourceW(h, 1);
                 exit(1);
             }
@@ -220,7 +226,10 @@ fn main() {
             group.len() as u32,
         );
         if ok == 0 {
-            eprintln!("UpdateResource(RT_GROUP_ICON) failed (err {})", GetLastError());
+            eprintln!(
+                "UpdateResource(RT_GROUP_ICON) failed (err {})",
+                GetLastError()
+            );
             EndUpdateResourceW(h, 1);
             exit(1);
         }
@@ -235,7 +244,10 @@ fn main() {
                 m.len() as u32,
             );
             if ok == 0 {
-                eprintln!("UpdateResource(RT_MANIFEST) failed (err {})", GetLastError());
+                eprintln!(
+                    "UpdateResource(RT_MANIFEST) failed (err {})",
+                    GetLastError()
+                );
                 EndUpdateResourceW(h, 1);
                 exit(1);
             }
@@ -254,7 +266,11 @@ fn main() {
                 data.len() as u32,
             );
             if ok == 0 {
-                eprintln!("UpdateResource(RT_RCDATA '{}') failed (err {})", fname, GetLastError());
+                eprintln!(
+                    "UpdateResource(RT_RCDATA '{}') failed (err {})",
+                    fname,
+                    GetLastError()
+                );
                 EndUpdateResourceW(h, 1);
                 exit(1);
             }
@@ -279,7 +295,10 @@ fn main() {
                 index_bytes.len() as u32,
             );
             if ok == 0 {
-                eprintln!("UpdateResource(RT_RCDATA index) failed (err {})", GetLastError());
+                eprintln!(
+                    "UpdateResource(RT_RCDATA index) failed (err {})",
+                    GetLastError()
+                );
                 EndUpdateResourceW(h, 1);
                 exit(1);
             }

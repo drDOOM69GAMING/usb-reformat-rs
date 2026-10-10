@@ -446,8 +446,10 @@ fn load_icons() -> (HICON, HICON) {
         if h == 0 {
             h = 256;
         }
-        let size = u32::from_le_bytes([bytes[e + 8], bytes[e + 9], bytes[e + 10], bytes[e + 11]]) as usize;
-        let off = u32::from_le_bytes([bytes[e + 12], bytes[e + 13], bytes[e + 14], bytes[e + 15]]) as usize;
+        let size =
+            u32::from_le_bytes([bytes[e + 8], bytes[e + 9], bytes[e + 10], bytes[e + 11]]) as usize;
+        let off = u32::from_le_bytes([bytes[e + 12], bytes[e + 13], bytes[e + 14], bytes[e + 15]])
+            as usize;
         if off + size > bytes.len() || size == 0 {
             continue;
         }
@@ -531,10 +533,10 @@ fn create_controls(hwnd: HWND) {
 
     unsafe {
         // Win98 dialogs frame each block of controls in an etched box with the
-// caption on the top-left edge. The frame itself is painted by the parent
-// (see paint_group) because BS_GROUPBOX draws its border in the DC text
-// colour, which is unreadable in the dark theme. Here are just the captions.
-let cap_drives = child(
+        // caption on the top-left edge. The frame itself is painted by the parent
+        // (see paint_group) because BS_GROUPBOX draws its border in the DC text
+        // colour, which is unreadable in the dark theme. Here are just the captions.
+        let cap_drives = child(
             hwnd,
             "STATIC",
             "Drives to erase - the WHOLE device is wiped (all its partitions)",
@@ -546,11 +548,15 @@ let cap_drives = child(
             340,
             16,
         );
-let list = child(
+        let list = child(
             hwnd,
             "LISTBOX",
             "",
-            base | WS_VSCROLL | LBS_NOTIFY | LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT | LBS_EXTENDEDSEL,
+            base | WS_VSCROLL
+                | LBS_NOTIFY
+                | LBS_HASSTRINGS
+                | LBS_NOINTEGRALHEIGHT
+                | LBS_EXTENDEDSEL,
             WS_EX_CLIENTEDGE,
             ID_LIST,
             14,
@@ -558,7 +564,7 @@ let list = child(
             472,
             116,
         );
-let cap_format = child(
+        let cap_format = child(
             hwnd,
             "STATIC",
             "New partition format",
@@ -570,7 +576,7 @@ let cap_format = child(
             160,
             16,
         );
-let r1 = child(
+        let r1 = child(
             hwnd,
             "BUTTON",
             "exFAT  (recommended)",
@@ -582,7 +588,7 @@ let r1 = child(
             140,
             18,
         );
-let r2 = child(
+        let r2 = child(
             hwnd,
             "BUTTON",
             "FAT32",
@@ -594,7 +600,7 @@ let r2 = child(
             80,
             18,
         );
-let check = child(
+        let check = child(
             hwnd,
             "BUTTON",
             "I understand this erases ALL data on the selected drive(s).",
@@ -606,7 +612,7 @@ let check = child(
             472,
             17,
         );
-let full = child(
+        let full = child(
             hwnd,
             "BUTTON",
             FULL_WIPE_OFF,
@@ -655,7 +661,18 @@ let full = child(
             72,
             22,
         );
-        let label3 = child(hwnd, "STATIC", "Type WIPE to confirm:", base, 0, 0, 10, 252, 118, 18);
+        let label3 = child(
+            hwnd,
+            "STATIC",
+            "Type WIPE to confirm:",
+            base,
+            0,
+            0,
+            10,
+            252,
+            118,
+            18,
+        );
         let confirm = child(
             hwnd,
             "EDIT",
@@ -781,8 +798,8 @@ let full = child(
         );
 
         for h in [
-            cap_drives, list, cap_format, r1, r2, check, full, label3, confirm, hide, rescan,
-            exit, logbtn, themebtn, musicbtn, wipe, pause, cancel, progress, log, status,
+            cap_drives, list, cap_format, r1, r2, check, full, label3, confirm, hide, rescan, exit,
+            logbtn, themebtn, musicbtn, wipe, pause, cancel, progress, log, status,
         ] {
             set_font(h, a.font);
         }
@@ -870,7 +887,11 @@ fn populate_drives() {
         let model = trim_model(&model);
         let text = match core::volume_info(ch) {
             Some(v) => {
-                let tag = if dt == core::DRIVE_FIXED { "FIXED - risky" } else { "removable" };
+                let tag = if dt == core::DRIVE_FIXED {
+                    "FIXED - risky"
+                } else {
+                    "removable"
+                };
                 if model.is_empty() {
                     format!(
                         "{}:   {}   '{}'   {:.1} GB free   [{} / {} / disk {}]",
@@ -897,7 +918,12 @@ fn populate_drives() {
             }
             None => {
                 if model.is_empty() {
-                    format!("{}:   (no filesystem)   [{} / disk {}]", ch, media.label(), disk)
+                    format!(
+                        "{}:   (no filesystem)   [{} / disk {}]",
+                        ch,
+                        media.label(),
+                        disk
+                    )
                 } else {
                     format!(
                         "{}:   {}   (no filesystem)   [{} / disk {}]",
@@ -928,7 +954,8 @@ fn selected_drives(a: &App) -> Vec<DriveEntry> {
         return Vec::new();
     }
     let mut idx = vec![0i32; n];
-    let got = unsafe { SendMessageW(a.list, LB_GETSELITEMS, n, idx.as_mut_ptr() as isize) } as usize;
+    let got =
+        unsafe { SendMessageW(a.list, LB_GETSELITEMS, n, idx.as_mut_ptr() as isize) } as usize;
     idx.truncate(got);
     idx.iter()
         .filter_map(|&i| {
@@ -1028,7 +1055,10 @@ fn toggle_pause() {
         unsafe {
             set_text(a.btn_pause, "Resume");
         }
-        set_status_text(a.status, "Paused - writing is on hold. Click Resume to continue.");
+        set_status_text(
+            a.status,
+            "Paused - writing is on hold. Click Resume to continue.",
+        );
     }
 }
 
@@ -1091,7 +1121,14 @@ unsafe fn resize_client_height(hwnd: HWND, client_h: i32) {
         bottom: 0,
     };
     GetWindowRect(hwnd, &mut cur);
-    MoveWindow(hwnd, cur.left, cur.top, CLIENT_W + frame_w, client_h + frame_h, 1);
+    MoveWindow(
+        hwnd,
+        cur.left,
+        cur.top,
+        CLIENT_W + frame_w,
+        client_h + frame_h,
+        1,
+    );
 }
 
 /// Apply the light or dark theme. The window background, the edit / list box
@@ -1109,7 +1146,11 @@ fn apply_theme(dark: bool, btn: HWND, status: HWND, hwnd: HWND) {
         dwm_set_dark(hwnd, dark);
         set_status_text(
             status,
-            if dark { "Dark theme on." } else { "Light theme on." },
+            if dark {
+                "Dark theme on."
+            } else {
+                "Light theme on."
+            },
         );
         // Repaints synchronously pump WM_CTLCOLOR* / WM_ERASEBKGND back into
         // this window, so nothing may hold a lock across this call.
@@ -1245,7 +1286,11 @@ fn tail_log(a: &mut App) {
 fn toggle_hide_fixed() {
     let mut a = app().lock().unwrap();
     a.hide_fixed = !a.hide_fixed;
-    let caption = if a.hide_fixed { "Show fixed drives" } else { "Hide fixed drives" };
+    let caption = if a.hide_fixed {
+        "Show fixed drives"
+    } else {
+        "Hide fixed drives"
+    };
     let hide = a.btn_hide;
     unsafe {
         set_text(hide, caption);
@@ -1300,8 +1345,16 @@ fn start_wipe(hwnd: HWND) {
         );
         return;
     }
-    let fs_kind = if checked(a.radio_fat32) { "fat32" } else { "exfat" };
-    let passes = if checked(a.full_wipe) { a.passes.max(1) } else { 0 };
+    let fs_kind = if checked(a.radio_fat32) {
+        "fat32"
+    } else {
+        "exfat"
+    };
+    let passes = if checked(a.full_wipe) {
+        a.passes.max(1)
+    } else {
+        0
+    };
     drop(a);
 
     // Full (multi-pass) overwrite is forbidden on solid-state drives.
@@ -1316,7 +1369,11 @@ fn start_wipe(hwnd: HWND) {
             .map(|c| format!("{}:", c))
             .collect::<Vec<_>>()
             .join(", ");
-        let verb = if ssd_sel.len() == 1 { "is an SSD" } else { "are SSDs" };
+        let verb = if ssd_sel.len() == 1 {
+            "is an SSD"
+        } else {
+            "are SSDs"
+        };
         message(
             hwnd,
             &format!(
@@ -1350,7 +1407,12 @@ fn start_wipe(hwnd: HWND) {
 
     let log_path = core::default_log_path();
     let _ = fs::remove_file(&log_path);
-    let mut params = format!("--run --drives {} --fs {} --log \"{}\"", letters, fs_kind, log_path.display());
+    let mut params = format!(
+        "--run --drives {} --fs {} --log \"{}\"",
+        letters,
+        fs_kind,
+        log_path.display()
+    );
     if passes >= 1 {
         params.push_str(&format!(" --passes {}", passes));
     }
@@ -1375,7 +1437,10 @@ fn start_wipe(hwnd: HWND) {
                 SetTimer(a.hwnd, TIMER_ID, TIMER_MS, std::ptr::null_mut());
             }
             let start = if passes >= 1 {
-                format!("Elevated worker started... {} (this can take a long time).", core::pass_label(passes))
+                format!(
+                    "Elevated worker started... {} (this can take a long time).",
+                    core::pass_label(passes)
+                )
             } else {
                 "Elevated worker started... wiping drive(s).".to_string()
             };
@@ -1385,7 +1450,11 @@ fn start_wipe(hwnd: HWND) {
                     "[RE-Formatter] Launching elevated worker for [{}] as {} - {}.\r\n\r\n",
                     letters,
                     fs_kind,
-                    if passes >= 1 { core::pass_label(passes) } else { "quick wipe".to_string() }
+                    if passes >= 1 {
+                        core::pass_label(passes)
+                    } else {
+                        "quick wipe".to_string()
+                    }
                 ),
             );
             set_status_text(a.status, &start);
@@ -1476,11 +1545,23 @@ fn on_timer(hwnd: HWND) {
             reset_for_next_wipe(&mut a);
 
             let (msg, flags) = if code == 0 {
-                ("Done - drive(s) reformatted successfully.", MB_OK | MB_ICONINFORMATION)
+                (
+                    "Done - drive(s) reformatted successfully.",
+                    MB_OK | MB_ICONINFORMATION,
+                )
             } else {
-                ("Finished, but at least one drive failed. See the log.", MB_OK | MB_ICONWARNING)
+                (
+                    "Finished, but at least one drive failed. See the log.",
+                    MB_OK | MB_ICONWARNING,
+                )
             };
-            append_edit(a.log, &format!("\r\n[RE-Formatter] Worker finished (exit code {}).\r\n", code));
+            append_edit(
+                a.log,
+                &format!(
+                    "\r\n[RE-Formatter] Worker finished (exit code {}).\r\n",
+                    code
+                ),
+            );
             set_status_text(a.status, msg);
             drop(a);
             // Re-read volumes only once the lock is free: the new partition may
@@ -1547,8 +1628,30 @@ fn create_pass_controls(hwnd: HWND) {
             344,
             16,
         );
-        let ok = child(hwnd, "BUTTON", "OK", base | BS_PUSHBUTTON | WS_TABSTOP, 0, PID_OK, 196, 180, 78, 26);
-        let cancel = child(hwnd, "BUTTON", "Cancel", base | BS_PUSHBUTTON | WS_TABSTOP, 0, PID_CANCEL, 280, 180, 78, 26);
+        let ok = child(
+            hwnd,
+            "BUTTON",
+            "OK",
+            base | BS_PUSHBUTTON | WS_TABSTOP,
+            0,
+            PID_OK,
+            196,
+            180,
+            78,
+            26,
+        );
+        let cancel = child(
+            hwnd,
+            "BUTTON",
+            "Cancel",
+            base | BS_PUSHBUTTON | WS_TABSTOP,
+            0,
+            PID_CANCEL,
+            280,
+            180,
+            78,
+            26,
+        );
         set_font(lbl, font);
         set_font(note, font);
         set_font(ok, font);
@@ -1588,7 +1691,12 @@ fn close_pass_dialog(hwnd: HWND, result: Option<u32>) {
     }
 }
 
-unsafe extern "system" fn pass_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn pass_wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     match msg {
         WM_CREATE => {
             create_pass_controls(hwnd);
@@ -1618,8 +1726,8 @@ unsafe extern "system" fn pass_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
                 let mut cls = [0u16; 32];
                 unsafe { GetClassNameW(lparam as HWND, cls.as_mut_ptr(), cls.len() as i32) };
                 let name = from_wide(&cls);
-                let is_surface = !name.eq_ignore_ascii_case("Edit")
-                    && !name.eq_ignore_ascii_case("ListBox");
+                let is_surface =
+                    !name.eq_ignore_ascii_case("Edit") && !name.eq_ignore_ascii_case("ListBox");
                 unsafe {
                     if is_surface {
                         SetBkMode(hdc, TRANSPARENT);
@@ -1689,7 +1797,12 @@ fn show_pass_dialog(parent: HWND, current: u32) -> Option<u32> {
     let win_w = rect.right - rect.left;
     let win_h = rect.bottom - rect.top;
 
-    let mut pr = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    let mut pr = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
     unsafe {
         GetWindowRect(parent, &mut pr);
     }
@@ -1812,7 +1925,11 @@ fn on_toggle_full(hwnd: HWND) {
                 unsafe {
                     set_text(
                         a.full_wipe,
-                        &format!("Full wipe ON: {} pass(es) [{}] - click to change.", p, core::passes_short(p)),
+                        &format!(
+                            "Full wipe ON: {} pass(es) [{}] - click to change.",
+                            p,
+                            core::passes_short(p)
+                        ),
                     );
                 }
                 set_status_text(a.status, &format!("{} selected.", core::pass_label(p)));
@@ -1839,7 +1956,12 @@ fn on_toggle_full(hwnd: HWND) {
 
 // ---------------- window proc ----------------
 
-unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     match msg {
         WM_CREATE => {
             create_controls(hwnd);
@@ -1966,7 +2088,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let mut cls = [0u16; 32];
             unsafe { GetClassNameW(child, cls.as_mut_ptr(), cls.len() as i32) };
             let name = from_wide(&cls);
-            let is_surface = !name.eq_ignore_ascii_case("Edit") && !name.eq_ignore_ascii_case("ListBox");
+            let is_surface =
+                !name.eq_ignore_ascii_case("Edit") && !name.eq_ignore_ascii_case("ListBox");
             let transparent = (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORDLG) && is_surface;
             unsafe {
                 if dark {
@@ -2152,7 +2275,12 @@ pub fn run() {
         )
     };
     if hwnd.is_null() {
-        message(std::ptr::null_mut(), "Could not create the window.", "Error", MB_OK | MB_ICONERROR);
+        message(
+            std::ptr::null_mut(),
+            "Could not create the window.",
+            "Error",
+            MB_OK | MB_ICONERROR,
+        );
         return;
     }
 
@@ -2220,7 +2348,10 @@ mod tests {
     fn parses_overwrite_progress_lines() {
         assert_eq!(parse_overwrite_progress("pass 1/1 : 0%"), Some((1, 1, 0)));
         assert_eq!(parse_overwrite_progress("pass 3/7 : 43%"), Some((3, 7, 43)));
-        assert_eq!(parse_overwrite_progress("pass 7/35 : 100%"), Some((7, 35, 100)));
+        assert_eq!(
+            parse_overwrite_progress("pass 7/35 : 100%"),
+            Some((7, 35, 100))
+        );
         // Not a progress line.
         assert_eq!(
             parse_overwrite_progress("overwrite pass 1/1 over 64.16 GB ..."),
@@ -2231,7 +2362,10 @@ mod tests {
     #[test]
     fn parses_step_lines() {
         assert_eq!(parse_step("G: [1/5] files wiped"), Some((1, 5)));
-        assert_eq!(parse_step("G: [3/5] disk overwritten (full wipe)"), Some((3, 5)));
+        assert_eq!(
+            parse_step("G: [3/5] disk overwritten (full wipe)"),
+            Some((3, 5))
+        );
         assert_eq!(parse_step("pass 1/1 : 0%"), None);
     }
 
@@ -2240,22 +2374,37 @@ mod tests {
         let mut a = App::new();
         a.full_run = true;
 
-        note_progress(&mut a, "[2026-10-10 01:33:16.187][DATA]   pass 1/7 : 0%\r\n");
+        note_progress(
+            &mut a,
+            "[2026-10-10 01:33:16.187][DATA]   pass 1/7 : 0%\r\n",
+        );
         assert_eq!(a.progress_pct, 0);
 
-        note_progress(&mut a, "[2026-10-10 01:40:00.000][DATA]   pass 4/7 : 50%\r\n");
+        note_progress(
+            &mut a,
+            "[2026-10-10 01:40:00.000][DATA]   pass 4/7 : 50%\r\n",
+        );
         assert_eq!(a.progress_pct, 50); // ((3*100) + 50) / 7 = 50
 
         // A later but "earlier" reading must not rewind the bar.
-        note_progress(&mut a, "[2026-10-10 01:41:00.000][DATA]   pass 3/7 : 40%\r\n");
+        note_progress(
+            &mut a,
+            "[2026-10-10 01:41:00.000][DATA]   pass 3/7 : 40%\r\n",
+        );
         assert_eq!(a.progress_pct, 50);
 
         // Step lines are ignored during a full run (they would rewind it).
-        note_progress(&mut a, "[2026-10-10 01:42:00.000][STEP] G: [1/5] files wiped\r\n");
+        note_progress(
+            &mut a,
+            "[2026-10-10 01:42:00.000][STEP] G: [1/5] files wiped\r\n",
+        );
         assert_eq!(a.progress_pct, 50);
 
         // Final pass tops out just under 100; the finish handler sets 100.
-        note_progress(&mut a, "[2026-10-10 02:00:00.000][DATA]   pass 7/7 : 100%\r\n");
+        note_progress(
+            &mut a,
+            "[2026-10-10 02:00:00.000][DATA]   pass 7/7 : 100%\r\n",
+        );
         assert_eq!(a.progress_pct, 99);
     }
 
@@ -2289,11 +2438,20 @@ mod tests {
     fn quick_run_falls_back_to_step_lines() {
         let mut a = App::new();
         a.full_run = false;
-        note_progress(&mut a, "[2026-10-10 01:33:10.718][STEP] G: [1/3] files wiped\r\n");
+        note_progress(
+            &mut a,
+            "[2026-10-10 01:33:10.718][STEP] G: [1/3] files wiped\r\n",
+        );
         assert_eq!(a.progress_pct, 0);
-        note_progress(&mut a, "[2026-10-10 01:33:13.000][STEP] G: [2/3] partition rebuilt\r\n");
+        note_progress(
+            &mut a,
+            "[2026-10-10 01:33:13.000][STEP] G: [2/3] partition rebuilt\r\n",
+        );
         assert_eq!(a.progress_pct, 33);
-        note_progress(&mut a, "[2026-10-10 01:33:16.000][STEP] G: [3/3] verifying\r\n");
+        note_progress(
+            &mut a,
+            "[2026-10-10 01:33:16.000][STEP] G: [3/3] verifying\r\n",
+        );
         assert_eq!(a.progress_pct, 66);
     }
 }

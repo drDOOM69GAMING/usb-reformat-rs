@@ -395,17 +395,32 @@ extern "system" {
         lp_param: *mut c_void,
     ) -> HWND;
     pub fn DefWindowProcW(h_wnd: HWND, msg: u32, w_param: WPARAM, l_param: LPARAM) -> LRESULT;
-    pub fn GetMessageW(lp_msg: *mut MSG, h_wnd: HWND, w_msg_filter_min: u32, w_msg_filter_max: u32) -> BOOL;
+    pub fn GetMessageW(
+        lp_msg: *mut MSG,
+        h_wnd: HWND,
+        w_msg_filter_min: u32,
+        w_msg_filter_max: u32,
+    ) -> BOOL;
     pub fn TranslateMessage(lp_msg: *const MSG) -> BOOL;
     pub fn DispatchMessageW(lp_msg: *const MSG) -> LRESULT;
     pub fn PostQuitMessage(n_exit_code: i32);
     pub fn SendMessageW(h_wnd: HWND, msg: u32, w_param: WPARAM, l_param: LPARAM) -> LRESULT;
     pub fn PostMessageW(h_wnd: HWND, msg: u32, w_param: WPARAM, l_param: LPARAM) -> BOOL;
     pub fn LoadCursorW(h_instance: HINSTANCE, lp_cursor_name: *const u16) -> HCURSOR;
-    pub fn SetTimer(h_wnd: HWND, n_id_event: usize, u_elapse: u32, lp_timer_func: *mut c_void) -> usize;
+    pub fn SetTimer(
+        h_wnd: HWND,
+        n_id_event: usize,
+        u_elapse: u32,
+        lp_timer_func: *mut c_void,
+    ) -> usize;
     pub fn KillTimer(h_wnd: HWND, u_id_event: usize) -> BOOL;
     pub fn GetSystemMetrics(n_index: i32) -> i32;
-    pub fn AdjustWindowRectEx(lp_rect: *mut RECT, dw_style: DWORD, b_menu: BOOL, dw_ex_style: DWORD) -> BOOL;
+    pub fn AdjustWindowRectEx(
+        lp_rect: *mut RECT,
+        dw_style: DWORD,
+        b_menu: BOOL,
+        dw_ex_style: DWORD,
+    ) -> BOOL;
     pub fn ShowWindow(h_wnd: HWND, n_cmd_show: i32) -> BOOL;
     pub fn UpdateWindow(h_wnd: HWND) -> BOOL;
     pub fn GetDC(h_wnd: HWND) -> HDC;
@@ -427,7 +442,14 @@ extern "system" {
     pub fn GetClassNameW(h_wnd: HWND, lp_class_name: *mut u16, n_max_count: i32) -> i32;
     pub fn GetClientRect(h_wnd: HWND, lp_rect: *mut RECT) -> BOOL;
     pub fn GetWindowRect(h_wnd: HWND, lp_rect: *mut RECT) -> BOOL;
-    pub fn MoveWindow(h_wnd: HWND, x: i32, y: i32, n_width: i32, n_height: i32, b_repaint: BOOL) -> BOOL;
+    pub fn MoveWindow(
+        h_wnd: HWND,
+        x: i32,
+        y: i32,
+        n_width: i32,
+        n_height: i32,
+        b_repaint: BOOL,
+    ) -> BOOL;
     pub fn GetSysColor(n_index: i32) -> u32;
     pub fn RedrawWindow(
         h_wnd: HWND,
@@ -453,7 +475,12 @@ extern "system" {
         cy_desired: i32,
         flags: u32,
     ) -> HICON;
-    pub fn MessageBoxW(h_wnd: HWND, lp_text: *const u16, lp_caption: *const u16, u_type: u32) -> i32;
+    pub fn MessageBoxW(
+        h_wnd: HWND,
+        lp_text: *const u16,
+        lp_caption: *const u16,
+        u_type: u32,
+    ) -> i32;
 }
 
 #[link(name = "gdi32")]
@@ -513,7 +540,12 @@ pub fn dwm_set_dark(h_wnd: HWND, dark: bool) {
     if let Some(f) = f {
         let v: i32 = if dark { 1 } else { 0 };
         unsafe {
-            f(h_wnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &v as *const i32 as *const c_void, 4);
+            f(
+                h_wnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE,
+                &v as *const i32 as *const c_void,
+                4,
+            );
         }
     }
 }
@@ -525,7 +557,11 @@ extern "system" {
 
 #[link(name = "advapi32")]
 extern "system" {
-    pub fn OpenProcessToken(process_handle: HANDLE, desired_access: DWORD, token_handle: *mut HANDLE) -> BOOL;
+    pub fn OpenProcessToken(
+        process_handle: HANDLE,
+        desired_access: DWORD,
+        token_handle: *mut HANDLE,
+    ) -> BOOL;
     pub fn GetTokenInformation(
         token_handle: HANDLE,
         token_information_class: i32,
@@ -538,7 +574,12 @@ extern "system" {
 #[link(name = "shell32")]
 extern "system" {
     pub fn ShellExecuteExW(p_exec_info: *mut crate::core::ShellExecuteInfoW) -> BOOL;
-    pub fn SHChangeNotify(w_event_id: i32, u_flags: u32, dw_item1: *mut c_void, dw_item2: *mut c_void);
+    pub fn SHChangeNotify(
+        w_event_id: i32,
+        u_flags: u32,
+        dw_item1: *mut c_void,
+        dw_item2: *mut c_void,
+    );
 }
 
 #[link(name = "ole32")]
