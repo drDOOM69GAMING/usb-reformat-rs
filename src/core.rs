@@ -1087,6 +1087,28 @@ const ERROR_WRITE_PROTECT: u32 = 19;
 const ERROR_SECTOR_NOT_FOUND: u32 = 55;
 const ERROR_DISK_FULL: u32 = 112;
 const ERROR_DEVICE_NOT_CONNECTED: u32 = 433;
+const ERROR_IO_DEVICE: u32 = 1117;
+
+/// How many times a single chunk is retried before the wipe is abandoned.
+/// The OS retries these itself (System log, event id 153) and usually wins, so
+/// aborting on the first failed write threw away hours of work over a hiccup.
+const WRITE_RETRIES: u32 = 8;
+
+/// True for errors that mean "the drive hiccuped", not "the drive is dead".
+/// Worth another attempt rather than failing the whole wipe.
+fn transient_write_error(err: u32) -> bool {
+    matches!(
+        err,
+        5     // ERROR_ACCESS_DENIED - device busy while the bus resets
+        | 6    // ERROR_INVALID_HANDLE
+        | 21   // ERROR_NOT_READY
+        | 31   // ERROR_GEN_FAILURE
+        | 1117 // ERROR_IO_DEVICE - reported an error under sustained load
+        | 1219 // ERROR_REQUEST_ABORTED
+        | 1611 // ERROR_BUS_RESET
+        | 1617 // ERROR_DEVICE_REMOVED - USB re-enumerating
+    )
+}
 
 /// Human-readable description of the wipe mode.
 pub fn pass_label(passes: u32) -> String {
@@ -1358,49 +1380,89 @@ fn overwrite_disk(disk: u32, passes: u32) -> bool {
             wait_if_paused();
             let n = std::cmp::min(CHUNK as u64, total - written) as usize;
             fill_buffer(&mut buf[..n], pass, &mut rng);
-            let mut done: DWORD = 0;
-            let w = unsafe {
-                WriteFile(
-                    h,
-                    buf.as_ptr() as *const c_void,
-                    n as DWORD,
-                    &mut done,
-                    std::ptr::null_mut(),
-                )
-            };
-            if w == 0 || done == 0 {
-                let err = unsafe { GetLastError() };
-                log(
-                    "ERROR",
-                    &format!("write failed at offset {} (err {}).", written, err),
-                );
-                // Say what actually went wrong - a dropped USB device is the
-                // single most common cause and needs completely different
-                // advice from a generic write error.
-                match err {
-                    ERROR_DEVICE_NOT_CONNECTED => log(
-                        "ERROR",
-                        "The USB device disconnected mid-write. This is a hardware / connection \
-                         problem - the port, cable or drive dropped out under load - not a fault in \
-                         this tool. Reconnect the drive and try a different USB port.",
-                    ),
-                    ERROR_DISK_FULL => log(
-                        "ERROR",
-                        "The drive ran out of addressable space - it may have failed or be a fake \
-                         capacity device.",
-                    ),
-                    ERROR_WRITE_PROTECT => log(
-                        "ERROR",
-                        "The device is write-protected, so it could not be overwritten.",
-                    ),
-                    ERROR_SECTOR_NOT_FOUND => log(
-                        "ERROR",
-                        "The drive reported a bad sector and cannot be overwritten reliably. \
-                         It has probably failed - do not trust it.",
-                    ),
-                    _ => {}
+
+            // Retry the same chunk on transient errors. A drive under
+            // sustained load often reports one bad write and then accepts the
+            // next one, and Windows retries these internally anyway (System
+            // log event 153). Giving up on the first failure killed a
+            // multi-hour wipe over a single hiccup.
+            let mut attempt: u32 = 0;
+            let mut done: DWORD;
+            loop {
+                done = 0;
+                let w = unsafe {
+                    WriteFile(
+                        h,
+                        buf.as_ptr() as *const c_void,
+                        n as DWORD,
+                        &mut done,
+                        std::ptr::null_mut(),
+                    )
+                };
+                if w != 0 && done > 0 {
+                    break;
                 }
-                ok_all = false;
+                let err = unsafe { GetLastError() };
+                attempt += 1;
+                if attempt >= WRITE_RETRIES || !transient_write_error(err) {
+                    log(
+                        "ERROR",
+                        &format!("write failed at offset {} (err {}).", written, err),
+                    );
+                    // Say what actually went wrong - a dropped USB device is
+                    // the single most common cause and needs completely
+                    // different advice from a generic write error.
+                    match err {
+                        ERROR_DEVICE_NOT_CONNECTED => log(
+                            "ERROR",
+                            "The USB device disconnected mid-write. This is a hardware / \
+                             connection problem - the port, cable or drive dropped out under \
+                             load - not a fault in this tool. Reconnect the drive and try a \
+                             different USB port.",
+                        ),
+                        ERROR_IO_DEVICE => log(
+                            "ERROR",
+                            "The drive reported an I/O error under sustained load. It managed a \
+                             previous pass and then stalled, which usually means the device is \
+                             overheating or worn out rather than a connection fault. Let it cool \
+                             and try a single pass instead of several.",
+                        ),
+                        ERROR_DISK_FULL => log(
+                            "ERROR",
+                            "The drive ran out of addressable space - it may have failed or be a \
+                             fake capacity device.",
+                        ),
+                        ERROR_WRITE_PROTECT => log(
+                            "ERROR",
+                            "The device is write-protected, so it could not be overwritten.",
+                        ),
+                        ERROR_SECTOR_NOT_FOUND => log(
+                            "ERROR",
+                            "The drive reported a bad sector and cannot be overwritten reliably. \
+                             It has probably failed - do not trust it.",
+                        ),
+                        _ => {}
+                    }
+                    ok_all = false;
+                    break;
+                }
+                // Back off so a struggling device gets a moment instead of
+                // being hammered while it recovers.
+                let wait_ms = 250u64 * attempt as u64;
+                log(
+                    "WARN",
+                    &format!(
+                        "write hiccup at offset {} (err {}), retry {}/{} in {} ms ...",
+                        written, err, attempt, WRITE_RETRIES, wait_ms
+                    ),
+                );
+                let give_up = Instant::now() + Duration::from_millis(wait_ms);
+                while Instant::now() < give_up {
+                    wait_if_paused();
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+            if !ok_all {
                 break;
             }
             written += done as u64;
